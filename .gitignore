@@ -1,0 +1,11 @@
+node_modules/
+dist/
+coverage/
+data/
+.env
+.env.local
+.env.*.local
+*.log
+*.sqlite
+*.sqlite-*
+!.env.example
