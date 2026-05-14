@@ -18,15 +18,19 @@ export interface RuntimeSecretInput {
 
 export interface CreateRuntimeInput {
   sandboxName: string;
-  volumeName?: string | null;
-  volumeMountPath?: string | null;
   image: string;
   command?: string[] | null;
   workingDir?: string | null;
   ports: Array<{
+    name?: string;
     hostPort: number;
     containerPort: number;
     protocol: 'tcp' | 'udp';
+  }>;
+  mounts: Array<{
+    hostPath: string;
+    mountPath: string;
+    readOnly?: boolean;
   }>;
   cpu: number;
   memoryMiB: number;
@@ -47,6 +51,10 @@ export interface MicrosandboxAdapter {
     args?: string[],
   ): Promise<{ stdout: string; stderr: string; exitCode: number }>;
   writeFiles(name: string, files: RuntimeFileDto[]): Promise<void>;
+  readFiles(
+    name: string,
+    paths: string[],
+  ): Promise<Array<{ path: string; content: string }>>;
   getStatus(name: string): Promise<string | null>;
   isHealthy(port: number): Promise<boolean>;
 }

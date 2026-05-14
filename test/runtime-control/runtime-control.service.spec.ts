@@ -1,0 +1,344 @@
+import { NotFoundException } from '@nestjs/common';
+import { jest } from '@jest/globals';
+import { AppConfigService } from '../../src/config/app-config.service.js';
+import type { RuntimeEntity } from '../../src/database/runtime.entity.js';
+import type { MicrosandboxAdapter } from '../../src/microsandbox/microsandbox-adapter.interface.js';
+import { RuntimeRegistryService } from '../../src/runtime-registry/runtime-registry.service.js';
+import { RuntimeControlService } from '../../src/runtime-control/runtime-control.service.js';
+
+type RegistryMock = Pick<
+  RuntimeRegistryService,
+  | 'createSandboxId'
+  | 'deleteRuntime'
+  | 'findRuntimeBySandboxId'
+  | 'findRuntimeBySandboxIdOrName'
+  | 'findVolumeByIdOrName'
+  | 'leasePorts'
+  | 'listRuntimes'
+  | 'listVolumes'
+  | 'normalizeName'
+  | 'mountRecordsEqual'
+  | 'portBindingsEqual'
+  | 'releasePorts'
+  | 'runtimeStatusSummary'
+  | 'sandboxName'
+  | 'saveRuntime'
+  | 'setRuntimeStatus'
+  | 'updateRuntime'
+  | 'volumeBackendName'
+  | 'volumePath'
+>;
+
+type MicrosandboxMock = Pick<
+  MicrosandboxAdapter,
+  | 'createDetachedRuntime'
+  | 'exec'
+  | 'getStatus'
+  | 'isHealthy'
+  | 'readFiles'
+  | 'remove'
+  | 'start'
+  | 'stop'
+  | 'writeFiles'
+>;
+
+const runtimeFixture = (): RuntimeEntity => ({
+  id: 'runtime-1',
+  sandboxId: 'runtime-1',
+  name: 'runtime-1',
+  sandboxName: 'runtime-runtime-1',
+  runtimeHostId: 'local',
+  portBindings: [{ containerPort: 8080, hostPort: 31000, protocol: 'tcp' }],
+  primaryPort: 8080,
+  hostPort: 31000,
+  primaryPortProtocol: 'tcp',
+  public: false,
+  authToken: 'token',
+  status: 'running',
+  image: 'image:1',
+  command: ['nginx', '-g', 'daemon off;'],
+  environment: {},
+  secrets: [],
+  workingDir: '/workspace',
+  mounts: [],
+  cpu: 1,
+  memoryMiB: 2048,
+  diskGiB: 6,
+  autoStopMinutes: null,
+  ephemeral: false,
+  lastActiveAt: new Date(),
+  statusReason: null,
+  createdAt: new Date(),
+  updatedAt: new Date(),
+});
+
+function createRegistryMock(runtime: RuntimeEntity | null): RegistryMock {
+  const createSandboxIdMock: jest.MockedFunction<
+    RuntimeRegistryService['createSandboxId']
+  > = jest.fn((seed?: string | null) => String(seed ?? 'runtime-1'));
+  const deleteRuntimeMock: jest.MockedFunction<
+    RuntimeRegistryService['deleteRuntime']
+  > = jest.fn((runtimeToDelete: RuntimeEntity) => {
+    void runtimeToDelete;
+    return Promise.resolve();
+  });
+  const findRuntimeBySandboxIdMock: jest.MockedFunction<
+    RuntimeRegistryService['findRuntimeBySandboxId']
+  > = jest.fn((sandboxId: string) => {
+    void sandboxId;
+    return Promise.resolve(runtime);
+  });
+  const findRuntimeBySandboxIdOrNameMock: jest.MockedFunction<
+    RuntimeRegistryService['findRuntimeBySandboxIdOrName']
+  > = jest.fn((sandboxIdOrName: string) => {
+    void sandboxIdOrName;
+    return Promise.resolve(runtime);
+  });
+  const findVolumeByIdOrNameMock: jest.MockedFunction<
+    RuntimeRegistryService['findVolumeByIdOrName']
+  > = jest.fn((volumeIdOrName: string) => {
+    void volumeIdOrName;
+    return Promise.resolve(null);
+  });
+  const leasePortsMock: jest.MockedFunction<
+    RuntimeRegistryService['leasePorts']
+  > = jest.fn((runtimeId: string, count: number) => {
+    void runtimeId;
+    return Promise.resolve(
+      Array.from({ length: count }, (_unused, index) => 31000 + index),
+    );
+  });
+  const listRuntimesMock: jest.MockedFunction<
+    RuntimeRegistryService['listRuntimes']
+  > = jest.fn(() => Promise.resolve(runtime ? [runtime] : []));
+  const listVolumesMock: jest.MockedFunction<
+    RuntimeRegistryService['listVolumes']
+  > = jest.fn(() => Promise.resolve([]));
+  const normalizeNameMock: jest.MockedFunction<
+    RuntimeRegistryService['normalizeName']
+  > = jest.fn((value?: string | null) => value?.trim() ?? null);
+  const mountRecordsEqualMock: jest.MockedFunction<
+    RuntimeRegistryService['mountRecordsEqual']
+  > = jest.fn(
+    (current, next): boolean =>
+      JSON.stringify(current ?? []) === JSON.stringify(next),
+  );
+  const portBindingsEqualMock: jest.MockedFunction<
+    RuntimeRegistryService['portBindingsEqual']
+  > = jest.fn(
+    (current, next): boolean =>
+      JSON.stringify(current ?? []) === JSON.stringify(next),
+  );
+  const releasePortsMock: jest.MockedFunction<
+    RuntimeRegistryService['releasePorts']
+  > = jest.fn((runtimeId: string) => {
+    void runtimeId;
+    return Promise.resolve();
+  });
+  const runtimeStatusSummaryMock: jest.MockedFunction<
+    RuntimeRegistryService['runtimeStatusSummary']
+  > = jest.fn((value: RuntimeEntity) => ({
+    runtimeId: value.id,
+    sandboxId: value.sandboxId,
+    status: value.status,
+  }));
+  const sandboxNameMock: jest.MockedFunction<
+    RuntimeRegistryService['sandboxName']
+  > = jest.fn((sandboxId: string) => `runtime-${sandboxId}`);
+  const saveRuntimeMock: jest.MockedFunction<
+    RuntimeRegistryService['saveRuntime']
+  > = jest.fn((input: Partial<RuntimeEntity>) =>
+    Promise.resolve({
+      ...runtimeFixture(),
+      ...input,
+    }),
+  );
+  const setRuntimeStatusMock: jest.MockedFunction<
+    RuntimeRegistryService['setRuntimeStatus']
+  > = jest.fn(
+    (
+      current: RuntimeEntity,
+      status: RuntimeEntity['status'],
+      statusReason?: string | null,
+    ) =>
+      Promise.resolve({
+        ...current,
+        status,
+        statusReason: statusReason ?? null,
+      }),
+  );
+  const updateRuntimeMock: jest.MockedFunction<
+    RuntimeRegistryService['updateRuntime']
+  > = jest.fn((current: RuntimeEntity, patch: Partial<RuntimeEntity>) =>
+    Promise.resolve({
+      ...current,
+      ...patch,
+    }),
+  );
+  const volumeBackendNameMock: jest.MockedFunction<
+    RuntimeRegistryService['volumeBackendName']
+  > = jest.fn((volumeId: string) => `runtime-data-${volumeId}`);
+  const volumePathMock: jest.MockedFunction<
+    RuntimeRegistryService['volumePath']
+  > = jest.fn(() => Promise.resolve('/tmp/volume'));
+
+  return {
+    createSandboxId: createSandboxIdMock,
+    deleteRuntime: deleteRuntimeMock,
+    findRuntimeBySandboxId: findRuntimeBySandboxIdMock,
+    findRuntimeBySandboxIdOrName: findRuntimeBySandboxIdOrNameMock,
+    findVolumeByIdOrName: findVolumeByIdOrNameMock,
+    leasePorts: leasePortsMock,
+    listRuntimes: listRuntimesMock,
+    listVolumes: listVolumesMock,
+    normalizeName: normalizeNameMock,
+    mountRecordsEqual: mountRecordsEqualMock,
+    portBindingsEqual: portBindingsEqualMock,
+    releasePorts: releasePortsMock,
+    runtimeStatusSummary: runtimeStatusSummaryMock,
+    sandboxName: sandboxNameMock,
+    saveRuntime: saveRuntimeMock,
+    setRuntimeStatus: setRuntimeStatusMock,
+    updateRuntime: updateRuntimeMock,
+    volumeBackendName: volumeBackendNameMock,
+    volumePath: volumePathMock,
+  };
+}
+
+function createMicrosandboxMock(): MicrosandboxMock {
+  const createDetachedRuntimeMock: jest.MockedFunction<
+    MicrosandboxAdapter['createDetachedRuntime']
+  > = jest.fn((input) => {
+    void input;
+    return Promise.resolve();
+  });
+  const execMock: jest.MockedFunction<MicrosandboxAdapter['exec']> = jest.fn(
+    (name: string, command: string, args?: string[]) => {
+      void name;
+      void command;
+      void args;
+      return Promise.resolve({
+        stdout: '',
+        stderr: '',
+        exitCode: 0,
+      });
+    },
+  );
+  const getStatusMock: jest.MockedFunction<MicrosandboxAdapter['getStatus']> =
+    jest.fn((name: string) => {
+      void name;
+      return Promise.resolve('running');
+    });
+  const isHealthyMock: jest.MockedFunction<MicrosandboxAdapter['isHealthy']> =
+    jest.fn((port: number) => {
+      void port;
+      return Promise.resolve(true);
+    });
+  const readFilesMock: jest.MockedFunction<MicrosandboxAdapter['readFiles']> =
+    jest.fn((name: string, paths: string[]) => {
+      void name;
+      void paths;
+      return Promise.resolve([]);
+    });
+  const removeMock: jest.MockedFunction<MicrosandboxAdapter['remove']> =
+    jest.fn((name: string) => {
+      void name;
+      return Promise.resolve();
+    });
+  const startMock: jest.MockedFunction<MicrosandboxAdapter['start']> = jest.fn(
+    (name: string) => {
+      void name;
+      return Promise.resolve();
+    },
+  );
+  const stopMock: jest.MockedFunction<MicrosandboxAdapter['stop']> = jest.fn(
+    (name: string) => {
+      void name;
+      return Promise.resolve();
+    },
+  );
+  const writeFilesMock: jest.MockedFunction<MicrosandboxAdapter['writeFiles']> =
+    jest.fn((name: string, files) => {
+      void name;
+      void files;
+      return Promise.resolve();
+    });
+
+  return {
+    createDetachedRuntime: createDetachedRuntimeMock,
+    exec: execMock,
+    getStatus: getStatusMock,
+    isHealthy: isHealthyMock,
+    readFiles: readFilesMock,
+    remove: removeMock,
+    start: startMock,
+    stop: stopMock,
+    writeFiles: writeFilesMock,
+  };
+}
+
+describe('RuntimeControlService', () => {
+  it('returns an existing healthy sandbox without reprovisioning', async () => {
+    const runtime = runtimeFixture();
+    const registry = createRegistryMock(runtime);
+    const microsandbox = createMicrosandboxMock();
+
+    const service = new RuntimeControlService(
+      new AppConfigService(),
+      registry as RuntimeRegistryService,
+      microsandbox,
+    );
+
+    const result = await service.ensure({
+      sandboxId: 'runtime-1',
+      name: 'runtime-1',
+      image: 'image:1',
+      command: ['nginx', '-g', 'daemon off;'],
+      env: {},
+      workingDir: '/workspace',
+      primaryPort: { containerPort: 8080, protocol: 'tcp' },
+    });
+
+    expect(result).toEqual({
+      runtimeId: 'runtime-1',
+      sandboxId: 'runtime-1',
+      status: 'running',
+    });
+    expect(microsandbox.createDetachedRuntime).not.toHaveBeenCalled();
+  });
+
+  it('throws when requesting a missing sandbox', async () => {
+    const registry = createRegistryMock(null);
+    const service = new RuntimeControlService(
+      new AppConfigService(),
+      registry as RuntimeRegistryService,
+      createMicrosandboxMock(),
+    );
+
+    await expect(service.get('missing')).rejects.toBeInstanceOf(
+      NotFoundException,
+    );
+  });
+
+  it('starts a stopped sandbox', async () => {
+    const runtime = runtimeFixture();
+    runtime.status = 'stopped';
+    const registry = createRegistryMock(runtime);
+    const microsandbox = createMicrosandboxMock();
+
+    const service = new RuntimeControlService(
+      new AppConfigService(),
+      registry as RuntimeRegistryService,
+      microsandbox,
+    );
+
+    const result = await service.start('runtime-1');
+
+    expect(microsandbox.start).toHaveBeenCalledWith('runtime-runtime-1');
+    expect(result).toEqual({
+      runtimeId: 'runtime-1',
+      sandboxId: 'runtime-1',
+      status: 'running',
+    });
+  });
+});

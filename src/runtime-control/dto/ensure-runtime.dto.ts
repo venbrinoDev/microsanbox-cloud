@@ -96,9 +96,26 @@ export class RuntimeResourcesDto {
   diskGiB?: number;
 }
 
-export class EnsureRuntimeDto {
+export class RuntimeVolumeMountDto {
   @IsString()
-  sandboxId!: string;
+  volumeId!: string;
+
+  @IsString()
+  mountPath!: string;
+
+  @IsOptional()
+  @IsString()
+  subpath?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  readOnly?: boolean;
+}
+
+class SandboxSpecDto {
+  @IsOptional()
+  @IsString()
+  name?: string;
 
   @IsOptional()
   @IsString()
@@ -132,7 +149,13 @@ export class EnsureRuntimeDto {
   @IsOptional()
   @ValidateNested()
   @Type(() => RuntimePortDto)
-  port?: RuntimePortDto;
+  primaryPort?: RuntimePortDto;
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => RuntimePortDto)
+  ports?: RuntimePortDto[];
 
   @IsOptional()
   @ValidateNested()
@@ -140,12 +163,31 @@ export class EnsureRuntimeDto {
   resources?: RuntimeResourcesDto;
 
   @IsOptional()
-  @IsString()
-  volumeMountPath?: string;
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => RuntimeVolumeMountDto)
+  volumes?: RuntimeVolumeMountDto[];
 
   @IsOptional()
   @IsBoolean()
-  persistentVolume?: boolean;
+  public?: boolean;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  autoStopMinutes?: number;
+
+  @IsOptional()
+  @IsBoolean()
+  ephemeral?: boolean;
+}
+
+export class CreateSandboxDto extends SandboxSpecDto {}
+
+export class EnsureRuntimeDto extends SandboxSpecDto {
+  @IsOptional()
+  @IsString()
+  sandboxId?: string;
 
   @IsOptional()
   @IsBoolean()

@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 @Injectable()
 export class AppConfigService {
@@ -17,6 +17,13 @@ export class AppConfigService {
     return (
       process.env.MICROSANDBOX_CLOUD_SQLITE_PATH?.trim() ||
       join(this.cwd, 'data', 'microsandbox-cloud.sqlite')
+    );
+  }
+
+  get managedVolumeRoot(): string {
+    return (
+      process.env.MICROSANDBOX_CLOUD_MANAGED_VOLUME_ROOT?.trim() ||
+      join(dirname(this.sqlitePath), 'volumes')
     );
   }
 

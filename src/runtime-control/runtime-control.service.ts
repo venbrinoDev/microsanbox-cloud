@@ -1,228 +1,266 @@
 import {
+  ConflictException,
   Inject,
   Injectable,
   NotFoundException,
-  ServiceUnavailableException,
+  UnauthorizedException,
 } from '@nestjs/common';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { AppConfigService } from '../config/app-config.service.js';
-import { RuntimeEntity } from '../database/runtime.entity.js';
+import {
+  RuntimeEntity,
+  type RuntimePortBindingRecord,
+  type RuntimeSecretRecord,
+  type RuntimeVolumeMountRecord,
+} from '../database/runtime.entity.js';
+import { VolumeEntity } from '../database/volume.entity.js';
 import {
   MICROSANDBOX_ADAPTER,
+  type CreateRuntimeInput,
   type MicrosandboxAdapter,
-  type RuntimeSecretInput,
 } from '../microsandbox/microsandbox-adapter.interface.js';
 import { RuntimeRegistryService } from '../runtime-registry/runtime-registry.service.js';
 import {
+  CreateSandboxDto,
   EnsureRuntimeDto,
-  RuntimeFileDto,
-  RuntimePortDto,
-  RuntimeSecretDto,
+  type RuntimeFileDto,
+  type RuntimePortDto,
+  type RuntimeResourcesDto,
+  type RuntimeSecretDto,
+  type RuntimeVolumeMountDto,
 } from './dto/ensure-runtime.dto.js';
-import { RuntimeIdentityService } from './runtime-identity.service.js';
+
+type RuntimeSpec = {
+  image: string;
+  command: string[] | null;
+  env: Record<string, string>;
+  files: RuntimeFileDto[];
+  secrets: RuntimeSecretRecord[];
+  workingDir: string | null;
+  ports: RuntimePortBindingRecord[];
+  mounts: RuntimeVolumeMountRecord[];
+  mountInputs: CreateRuntimeInput['mounts'];
+  resources: Required<RuntimeResourcesDto>;
+  public: boolean;
+  autoStopMinutes: number | null;
+  ephemeral: boolean;
+};
+
+type RuntimeSummary = Record<string, unknown>;
 
 @Injectable()
 export class RuntimeControlService {
   constructor(
     private readonly config: AppConfigService,
     private readonly registry: RuntimeRegistryService,
-    private readonly identity: RuntimeIdentityService,
     @Inject(MICROSANDBOX_ADAPTER)
     private readonly microsandbox: MicrosandboxAdapter,
   ) {}
 
-  async ensure(input: EnsureRuntimeDto): Promise<Record<string, unknown>> {
-    const sandboxId = this.identity.normalizeSandboxId(input.sandboxId);
-    let runtime = await this.registry.findRuntime(sandboxId);
-    const files = this.buildRuntimeFiles(input.files ?? []);
-    const secrets = this.buildRuntimeSecrets(input.secrets ?? []);
-    const port = this.resolvePort(input.port);
-    const nextImage = input.image?.trim() || this.config.defaultImage;
-    const nextCommand = input.command?.length ? input.command : null;
-    const nextEnv = input.env ?? {};
-    const nextWorkingDir = input.workingDir?.trim() || null;
-    const nextVolumeMountPath =
-      input.persistentVolume === false
-        ? null
-        : input.volumeMountPath?.trim() || this.config.defaultVolumeMountPath;
-
-    if (
-      runtime &&
-      (input.forceRecreate ||
-        this.requiresRecreate(runtime, {
-          image: nextImage,
-          command: nextCommand,
-          env: nextEnv,
-          secrets,
-          workingDir: nextWorkingDir,
-          containerPort: port.containerPort,
-          protocol: port.protocol,
-          volumeMountPath: nextVolumeMountPath,
-          persistentVolume: input.persistentVolume !== false,
-        }))
-    ) {
-      await this.microsandbox.remove(runtime.sandboxName, runtime.volumeName);
-      await this.registry.deleteRuntime(runtime);
-      runtime = null;
-    }
-
-    if (runtime) {
-      const status = await this.microsandbox.getStatus(runtime.sandboxName);
-      if (
-        status === 'running' &&
-        runtime.primaryPort === port.containerPort &&
-        (await this.waitForHealthy(runtime.hostPort))
-      ) {
-        if (files.length > 0) {
-          await this.microsandbox.writeFiles(runtime.sandboxName, files);
-        }
-        if (input.refreshActivity !== false) {
-          runtime = await this.registry.updateRuntime(runtime, {
-            lastActiveAt: new Date(),
-            status: 'running',
-            statusReason:
-              files.length > 0
-                ? 'config_synced_existing'
-                : runtime.statusReason,
-          });
-        }
-        return this.registry.runtimeStatusSummary(runtime);
-      }
-
-      if (
-        status === 'running' ||
-        status === 'stopped' ||
-        status === 'draining'
-      ) {
-        runtime = await this.reviveRuntime(runtime, files, status);
-        return this.registry.runtimeStatusSummary(runtime);
+  async create(input: CreateSandboxDto): Promise<RuntimeSummary> {
+    const name = this.registry.normalizeName(input.name);
+    if (name) {
+      const existing = await this.registry.findRuntimeBySandboxIdOrName(name);
+      if (existing) {
+        throw new ConflictException(`Sandbox name already exists: ${name}`);
       }
     }
-
-    if (!runtime) {
-      const persistentVolume = input.persistentVolume !== false;
-      runtime = await this.registry.saveRuntime({
-        sandboxId,
-        sandboxName: this.registry.sandboxName(sandboxId),
-        volumeName: persistentVolume
-          ? this.registry.volumeName(sandboxId)
-          : null,
-        volumeMountPath: nextVolumeMountPath,
-        runtimeHostId: this.registry.localHostId,
-        hostPort: 0,
-        primaryPort: port.containerPort,
-        primaryPortProtocol: port.protocol,
-        status: 'provisioning',
-        image: nextImage,
-        command: nextCommand,
-        environment: nextEnv,
-        secrets,
-        workingDir: nextWorkingDir,
-        lastActiveAt: new Date(),
-      });
-      const hostPort = await this.registry.leasePort(runtime.id);
-      runtime = await this.registry.updateRuntime(runtime, { hostPort });
-    }
-
-    await this.microsandbox.createDetachedRuntime({
-      sandboxName: runtime.sandboxName,
-      volumeName: runtime.volumeName,
-      volumeMountPath: runtime.volumeMountPath,
-      image: nextImage,
-      command: nextCommand ?? runtime.command,
-      workingDir: nextWorkingDir ?? runtime.workingDir,
-      ports: [
-        {
-          hostPort: runtime.hostPort,
-          containerPort: runtime.primaryPort,
-          protocol: runtime.primaryPortProtocol,
-        },
-      ],
-      cpu: input.resources?.cpu ?? this.config.defaultCpu,
-      memoryMiB: input.resources?.memoryMiB ?? this.config.defaultMemoryMiB,
-      diskGiB: input.resources?.diskGiB ?? this.config.defaultDiskGiB,
-      env: nextEnv,
-      secrets,
-      files,
+    const sandboxId = this.registry.createSandboxId(name);
+    return this.provision({
+      ...input,
+      sandboxId,
+      forceRecreate: false,
+      refreshActivity: true,
     });
+  }
 
-    const healthy = await this.waitForHealthy(runtime.hostPort);
-    runtime = await this.registry.updateRuntime(runtime, {
-      status: healthy ? 'running' : 'error',
-      statusReason: healthy ? 'provisioned' : 'runtime_unhealthy',
-      image: nextImage,
-      command: nextCommand ?? runtime.command,
-      environment: nextEnv,
-      secrets,
-      workingDir: nextWorkingDir ?? runtime.workingDir,
-      lastActiveAt: new Date(),
-    });
+  async ensure(input: EnsureRuntimeDto): Promise<RuntimeSummary> {
+    const sandboxId = this.registry.createSandboxId(
+      input.sandboxId ?? input.name ?? undefined,
+    );
+    return this.provision({ ...input, sandboxId });
+  }
+
+  async list(): Promise<RuntimeSummary> {
+    const sandboxes = await this.registry.listRuntimes();
+    return {
+      sandboxes: sandboxes.map((runtime) =>
+        this.registry.runtimeStatusSummary(runtime),
+      ),
+    };
+  }
+
+  async get(sandboxIdOrName: string): Promise<RuntimeSummary> {
+    const runtime = await this.requireRuntime(sandboxIdOrName);
+    return this.registry.runtimeStatusSummary(await this.syncStatus(runtime));
+  }
+
+  async start(sandboxIdOrName: string): Promise<RuntimeSummary> {
+    let runtime = await this.requireRuntime(sandboxIdOrName);
+    await this.microsandbox.start(runtime.sandboxName);
+    runtime = await this.registry.setRuntimeStatus(
+      runtime,
+      'running',
+      'manual:start',
+    );
     return this.registry.runtimeStatusSummary(runtime);
   }
 
-  async get(sandboxId: string): Promise<Record<string, unknown>> {
-    let runtime = await this.requireRuntime(sandboxId);
-    const status = await this.microsandbox.getStatus(runtime.sandboxName);
-    if (status && status !== runtime.status) {
-      runtime = await this.registry.updateRuntime(runtime, {
-        status: this.normalizeStatus(status),
-      });
-    }
+  async stop(sandboxIdOrName: string): Promise<RuntimeSummary> {
+    let runtime = await this.requireRuntime(sandboxIdOrName);
+    await this.microsandbox.stop(runtime.sandboxName);
+    runtime = await this.registry.setRuntimeStatus(
+      runtime,
+      'stopped',
+      'manual:stop',
+    );
     return this.registry.runtimeStatusSummary(runtime);
   }
 
-  async power(
-    sandboxId: string,
-    action: 'start' | 'stop',
-  ): Promise<Record<string, unknown>> {
-    let runtime = await this.requireRuntime(sandboxId);
-    if (action === 'start') {
-      await this.microsandbox.start(runtime.sandboxName);
-      runtime = await this.registry.setRuntimeStatus(
-        runtime,
-        'running',
-        'manual:start',
-      );
-    } else {
-      await this.microsandbox.stop(runtime.sandboxName);
-      runtime = await this.registry.setRuntimeStatus(
-        runtime,
-        'stopped',
-        'manual:stop',
-      );
-    }
-    return this.registry.runtimeStatusSummary(runtime);
-  }
-
-  async delete(sandboxId: string): Promise<Record<string, unknown>> {
-    const runtime = await this.requireRuntime(sandboxId);
+  async delete(sandboxIdOrName: string): Promise<RuntimeSummary> {
+    const runtime = await this.requireRuntime(sandboxIdOrName);
     await this.registry.setRuntimeStatus(
       runtime,
       'deleting',
       'delete_requested',
     );
-    await this.microsandbox.remove(runtime.sandboxName, runtime.volumeName);
+    await this.microsandbox.remove(runtime.sandboxName);
+    await this.registry.releasePorts(runtime.id);
     await this.registry.deleteRuntime(runtime);
+    return { sandboxId: runtime.sandboxId, deleted: true };
+  }
+
+  async createVolume(input: {
+    name: string;
+    quotaMiB?: number;
+  }): Promise<RuntimeSummary> {
+    const name = this.registry.normalizeName(input.name);
+    if (!name) {
+      throw new ConflictException('Volume name is required');
+    }
+    const existing = await this.registry.findVolumeByIdOrName(name);
+    if (existing) {
+      throw new ConflictException(`Volume name already exists: ${name}`);
+    }
+    const volume = await this.registry.saveVolume({
+      name,
+      backendName: this.registry.volumeBackendName(
+        this.registry.createSandboxId(name),
+      ),
+      quotaMiB: input.quotaMiB ?? null,
+    });
+    await this.registry.volumePath(volume);
+    return this.volumeSummary(volume);
+  }
+
+  async listVolumes(): Promise<RuntimeSummary> {
+    const volumes = await this.registry.listVolumes();
+    return { volumes: volumes.map((volume) => this.volumeSummary(volume)) };
+  }
+
+  async getVolume(volumeIdOrName: string): Promise<RuntimeSummary> {
+    const volume = await this.requireVolume(volumeIdOrName);
+    return this.volumeSummary(volume);
+  }
+
+  async deleteVolume(volumeIdOrName: string): Promise<RuntimeSummary> {
+    const volume = await this.requireVolume(volumeIdOrName);
+    await this.registry.deleteVolume(volume);
+    return { volumeId: volume.id, deleted: true };
+  }
+
+  async getPreviewUrl(
+    sandboxIdOrName: string,
+    port: number,
+  ): Promise<RuntimeSummary> {
+    const runtime = await this.ensurePreviewable(sandboxIdOrName, port);
+    const baseUrl = this.config.proxyBaseUrl.replace(/\/+$/g, '');
     return {
       sandboxId: runtime.sandboxId,
-      deleted: true,
+      port,
+      url: `${baseUrl}/proxy/${encodeURIComponent(runtime.sandboxId)}/ports/${port}`,
+      token: runtime.authToken,
+      headerName: 'x-microsandbox-preview-token',
+      expiresAt: null,
     };
   }
 
-  async exec(
+  async getSignedPreviewUrl(
+    sandboxIdOrName: string,
+    port: number,
+  ): Promise<RuntimeSummary> {
+    const runtime = await this.ensurePreviewable(sandboxIdOrName, port);
+    const tokenRecord = await this.registry.createSignedPreviewToken(
+      runtime.sandboxId,
+      port,
+      this.config.connectionTtlSeconds,
+    );
+    const baseUrl = this.config.proxyBaseUrl.replace(/\/+$/g, '');
+    return {
+      sandboxId: runtime.sandboxId,
+      port,
+      token: tokenRecord.token,
+      url: `${baseUrl}/proxy/signed/${encodeURIComponent(tokenRecord.token)}/ports/${port}`,
+      expiresAt: tokenRecord.expiresAt.toISOString(),
+    };
+  }
+
+  async expireSignedPreviewUrl(
+    sandboxIdOrName: string,
+    port: number,
+    token: string,
+  ): Promise<RuntimeSummary> {
+    const runtime = await this.requireRuntime(sandboxIdOrName);
+    const record = await this.registry.getSignedPreviewToken(token, port);
+    if (!record || record.sandboxId !== runtime.sandboxId) {
+      throw new NotFoundException('Signed preview token not found');
+    }
+    await this.registry.expireSignedPreviewToken(token, port);
+    return { sandboxId: runtime.sandboxId, port, token, expired: true };
+  }
+
+  async getPreviewPublicState(sandboxId: string): Promise<RuntimeSummary> {
+    const runtime = await this.requireRuntime(sandboxId);
+    return { sandboxId: runtime.sandboxId, public: runtime.public };
+  }
+
+  async validatePreviewToken(
     sandboxId: string,
+    token: string,
+  ): Promise<RuntimeSummary> {
+    const runtime = await this.requireRuntime(sandboxId);
+    if (!this.tokensEqual(runtime.authToken, token)) {
+      throw new UnauthorizedException('Invalid preview token');
+    }
+    return { sandboxId: runtime.sandboxId, valid: true };
+  }
+
+  async resolveSignedPreviewToken(
+    token: string,
+    port: number,
+  ): Promise<RuntimeSummary> {
+    const record = await this.registry.getSignedPreviewToken(token, port);
+    if (!record || this.registry.hasSignedPreviewTokenExpired(record)) {
+      if (record) {
+        await this.registry.expireSignedPreviewToken(token, port);
+      }
+      throw new NotFoundException('Signed preview token not found');
+    }
+    return { sandboxId: record.sandboxId, port };
+  }
+
+  async exec(
+    sandboxIdOrName: string,
     command: string,
     args: string[] = [],
-  ): Promise<Record<string, unknown>> {
-    const runtime = await this.requireRuntime(sandboxId);
+  ): Promise<RuntimeSummary> {
+    const runtime = await this.requireRunningRuntime(sandboxIdOrName);
     const result = await this.microsandbox.exec(
       runtime.sandboxName,
       command,
       args,
     );
-    await this.registry.updateRuntime(runtime, {
-      lastActiveAt: new Date(),
-      status: 'running',
-    });
+    await this.registry.updateRuntime(runtime, { lastActiveAt: new Date() });
     return {
       sandboxId: runtime.sandboxId,
       sandboxName: runtime.sandboxName,
@@ -230,17 +268,11 @@ export class RuntimeControlService {
     };
   }
 
-  async refreshActivity(sandboxId: string): Promise<Record<string, unknown>> {
-    const runtime = await this.requireRuntime(sandboxId);
-    await this.registry.updateRuntime(runtime, { lastActiveAt: new Date() });
-    return this.registry.runtimeStatusSummary(runtime);
-  }
-
   async writeFiles(
-    sandboxId: string,
+    sandboxIdOrName: string,
     files: RuntimeFileDto[],
-  ): Promise<Record<string, unknown>> {
-    const runtime = await this.requireRuntime(sandboxId);
+  ): Promise<RuntimeSummary> {
+    const runtime = await this.requireRunningRuntime(sandboxIdOrName);
     await this.microsandbox.writeFiles(
       runtime.sandboxName,
       this.buildRuntimeFiles(files),
@@ -249,210 +281,472 @@ export class RuntimeControlService {
     return this.registry.runtimeStatusSummary(runtime);
   }
 
-  async connection(sandboxId: string): Promise<RuntimeEntity> {
-    const runtime = await this.requireRuntime(sandboxId);
-    return this.ensureConnectable(runtime);
+  async downloadFiles(
+    sandboxIdOrName: string,
+    paths: string[],
+  ): Promise<Record<string, unknown>> {
+    const runtime = await this.requireRunningRuntime(sandboxIdOrName);
+    const files = await this.microsandbox.readFiles(runtime.sandboxName, paths);
+    await this.registry.updateRuntime(runtime, { lastActiveAt: new Date() });
+    return {
+      sandboxId: runtime.sandboxId,
+      files,
+    };
   }
 
-  private async requireRuntime(sandboxId: string): Promise<RuntimeEntity> {
-    const normalizedSandboxId = this.identity.normalizeSandboxId(sandboxId);
-    const runtime = await this.registry.findRuntime(normalizedSandboxId);
+  async validateProxyAccessBySandbox(
+    sandboxId: string,
+    port: number,
+    token?: string | null,
+  ): Promise<{ runtime: RuntimeEntity; hostPort: number }> {
+    const runtime = await this.requireRuntime(sandboxId);
+    if (!runtime.public) {
+      if (!token || !this.tokensEqual(runtime.authToken, token)) {
+        throw new UnauthorizedException('Missing or invalid preview token');
+      }
+    }
+    return this.resolveProxyTarget(runtime, port);
+  }
+
+  async validateProxyAccessBySignedToken(
+    token: string,
+    port: number,
+  ): Promise<{ runtime: RuntimeEntity; hostPort: number }> {
+    const resolved = await this.resolveSignedPreviewToken(token, port);
+    const runtime = await this.requireRuntime(String(resolved.sandboxId));
+    return this.resolveProxyTarget(runtime, port);
+  }
+
+  private async provision(input: EnsureRuntimeDto): Promise<RuntimeSummary> {
+    const name = this.registry.normalizeName(input.name);
+    if (name) {
+      const existingByName =
+        await this.registry.findRuntimeBySandboxIdOrName(name);
+      if (existingByName && existingByName.sandboxId !== input.sandboxId) {
+        throw new ConflictException(`Sandbox name already exists: ${name}`);
+      }
+    }
+
+    let runtime = await this.registry.findRuntimeBySandboxId(input.sandboxId!);
+    const spec = await this.buildSpec(input);
+    const initialPrimaryPort = this.firstPortBinding(spec.ports);
+
+    if (
+      runtime &&
+      (input.forceRecreate === true ||
+        this.requiresRecreate(runtime, spec, name))
+    ) {
+      await this.microsandbox.remove(runtime.sandboxName);
+      await this.registry.releasePorts(runtime.id);
+      await this.registry.deleteRuntime(runtime);
+      runtime = null;
+    }
+
+    if (runtime) {
+      const currentRuntime = runtime;
+      const currentStatus = await this.microsandbox.getStatus(
+        currentRuntime.sandboxName,
+      );
+      const primaryHostPort =
+        currentRuntime.portBindings?.find(
+          (binding) => binding.containerPort === currentRuntime.primaryPort,
+        )?.hostPort ?? currentRuntime.hostPort;
+      if (
+        currentStatus === 'running' &&
+        (await this.microsandbox.isHealthy(primaryHostPort))
+      ) {
+        if (spec.files.length > 0) {
+          await this.microsandbox.writeFiles(
+            currentRuntime.sandboxName,
+            spec.files,
+          );
+        }
+        runtime = await this.registry.updateRuntime(currentRuntime, {
+          name,
+          status: 'running',
+          statusReason:
+            spec.files.length > 0
+              ? 'config_synced_existing'
+              : currentRuntime.statusReason,
+          lastActiveAt:
+            input.refreshActivity === false
+              ? currentRuntime.lastActiveAt
+              : new Date(),
+        });
+        return this.registry.runtimeStatusSummary(runtime);
+      }
+    }
+
     if (!runtime) {
-      throw new NotFoundException(
-        `Runtime not found for sandboxId=${normalizedSandboxId}`,
+      const sandboxId = input.sandboxId!;
+      const authToken = randomBytes(24).toString('base64url');
+      runtime = await this.registry.saveRuntime({
+        sandboxId,
+        name,
+        sandboxName: this.registry.sandboxName(sandboxId),
+        runtimeHostId: this.registry.localHostId,
+        portBindings: [],
+        primaryPort: initialPrimaryPort.containerPort,
+        hostPort: 0,
+        primaryPortProtocol: initialPrimaryPort.protocol,
+        public: spec.public,
+        authToken,
+        status: 'provisioning',
+        image: spec.image,
+        command: spec.command,
+        environment: spec.env,
+        secrets: spec.secrets,
+        workingDir: spec.workingDir,
+        mounts: spec.mounts,
+        cpu: spec.resources.cpu,
+        memoryMiB: spec.resources.memoryMiB,
+        diskGiB: spec.resources.diskGiB,
+        autoStopMinutes: spec.autoStopMinutes,
+        ephemeral: spec.ephemeral,
+        lastActiveAt: new Date(),
+        statusReason: 'allocating_ports',
+      });
+      try {
+        const leased = await this.registry.leasePorts(
+          runtime.id,
+          spec.ports.length,
+        );
+        spec.ports.forEach((port, index) => {
+          port.hostPort = leased[index]!;
+        });
+      } catch (error) {
+        await this.registry.deleteRuntime(runtime);
+        throw error;
+      }
+    }
+
+    if ((runtime.portBindings?.length ?? 0) === 0) {
+      const leased = await this.registry.leasePorts(
+        runtime.id,
+        spec.ports.length,
+      );
+      spec.ports.forEach((port, index) => {
+        port.hostPort = leased[index]!;
+      });
+    } else {
+      const existingRuntime = runtime;
+      spec.ports = spec.ports.map((port, index) => ({
+        ...port,
+        hostPort:
+          existingRuntime.portBindings[index]?.hostPort ??
+          existingRuntime.hostPort,
+      }));
+    }
+
+    await this.microsandbox.createDetachedRuntime({
+      sandboxName: runtime.sandboxName,
+      image: spec.image,
+      command: spec.command,
+      workingDir: spec.workingDir,
+      ports: spec.ports,
+      mounts: spec.mountInputs,
+      cpu: spec.resources.cpu,
+      memoryMiB: spec.resources.memoryMiB,
+      diskGiB: spec.resources.diskGiB,
+      env: spec.env,
+      secrets: spec.secrets,
+      files: spec.files,
+    });
+
+    const updatedPrimaryPort = this.firstPortBinding(spec.ports);
+    const primaryHostPort = updatedPrimaryPort.hostPort;
+    const healthy = await this.waitForHealthy(primaryHostPort);
+    runtime = await this.registry.updateRuntime(runtime, {
+      name,
+      portBindings: spec.ports,
+      primaryPort: updatedPrimaryPort.containerPort,
+      hostPort: primaryHostPort,
+      primaryPortProtocol: updatedPrimaryPort.protocol,
+      public: spec.public,
+      status: healthy ? 'running' : 'error',
+      statusReason: healthy ? 'provisioned' : 'runtime_unhealthy',
+      image: spec.image,
+      command: spec.command,
+      environment: spec.env,
+      secrets: spec.secrets,
+      workingDir: spec.workingDir,
+      mounts: spec.mounts,
+      cpu: spec.resources.cpu,
+      memoryMiB: spec.resources.memoryMiB,
+      diskGiB: spec.resources.diskGiB,
+      autoStopMinutes: spec.autoStopMinutes,
+      ephemeral: spec.ephemeral,
+      lastActiveAt:
+        input.refreshActivity === false ? runtime.lastActiveAt : new Date(),
+    });
+    return this.registry.runtimeStatusSummary(runtime);
+  }
+
+  private async buildSpec(
+    input: CreateSandboxDto | EnsureRuntimeDto,
+  ): Promise<RuntimeSpec> {
+    const files = this.buildRuntimeFiles(input.files ?? []);
+    const secrets = this.buildRuntimeSecrets(input.secrets ?? []);
+    let ports = this.resolvePorts(input.ports, input.primaryPort);
+    const resources = {
+      cpu: input.resources?.cpu ?? this.config.defaultCpu,
+      memoryMiB: input.resources?.memoryMiB ?? this.config.defaultMemoryMiB,
+      diskGiB: input.resources?.diskGiB ?? this.config.defaultDiskGiB,
+    };
+    const volumes = await this.resolveVolumes(input.volumes ?? []);
+    ports = ports.map((port) => ({ ...port, hostPort: 0 }));
+    return {
+      image: input.image?.trim() || this.config.defaultImage,
+      command: input.command?.length ? input.command : null,
+      env: input.env ?? {},
+      files,
+      secrets,
+      workingDir: input.workingDir?.trim() || null,
+      ports,
+      mounts: volumes.mountRecords,
+      mountInputs: volumes.mountInputs,
+      resources,
+      public: input.public === true,
+      autoStopMinutes: input.autoStopMinutes ?? null,
+      ephemeral: input.ephemeral === true,
+    };
+  }
+
+  private async resolveVolumes(volumes: RuntimeVolumeMountDto[]): Promise<{
+    mountRecords: RuntimeVolumeMountRecord[];
+    mountInputs: CreateRuntimeInput['mounts'];
+  }> {
+    const mountRecords: RuntimeVolumeMountRecord[] = [];
+    const mountInputs: CreateRuntimeInput['mounts'] = [];
+    for (const volumeMount of volumes) {
+      const volume = await this.requireVolume(volumeMount.volumeId);
+      const hostPath = await this.registry.volumePath(
+        volume,
+        volumeMount.subpath ?? null,
+      );
+      mountRecords.push({
+        volumeId: volume.id,
+        volumeName: volume.name,
+        mountPath: volumeMount.mountPath,
+        subpath: volumeMount.subpath?.trim() || undefined,
+        readOnly: volumeMount.readOnly === true,
+      });
+      mountInputs.push({
+        hostPath,
+        mountPath: volumeMount.mountPath,
+        readOnly: volumeMount.readOnly === true,
+      });
+    }
+    return { mountRecords, mountInputs };
+  }
+
+  private resolvePorts(
+    ports?: RuntimePortDto[],
+    primaryPort?: RuntimePortDto,
+  ): RuntimePortBindingRecord[] {
+    const normalized = (
+      ports?.length
+        ? ports
+        : [
+            {
+              containerPort:
+                primaryPort?.containerPort ?? this.config.defaultExposedPort,
+              protocol: primaryPort?.protocol ?? ('tcp' as const),
+              name: primaryPort?.name,
+            },
+          ]
+    ).map((entry) => ({
+      name: entry.name?.trim() || undefined,
+      containerPort: entry.containerPort,
+      hostPort: 0,
+      protocol: entry.protocol ?? 'tcp',
+    }));
+    return normalized;
+  }
+
+  private requiresRecreate(
+    runtime: RuntimeEntity,
+    next: RuntimeSpec,
+    nextName: string | null,
+  ): boolean {
+    if ((runtime.name ?? null) !== nextName) return true;
+    if (runtime.image !== next.image) return true;
+    if (
+      JSON.stringify(runtime.command ?? []) !==
+      JSON.stringify(next.command ?? [])
+    )
+      return true;
+    if (JSON.stringify(runtime.environment ?? {}) !== JSON.stringify(next.env))
+      return true;
+    if (JSON.stringify(runtime.secrets ?? []) !== JSON.stringify(next.secrets))
+      return true;
+    if ((runtime.workingDir ?? null) !== next.workingDir) return true;
+    if (
+      !this.registry.portBindingsEqual(
+        runtime.portBindings,
+        next.ports.map((port, index) => ({
+          ...port,
+          hostPort: runtime.portBindings[index]?.hostPort ?? runtime.hostPort,
+        })),
+      )
+    )
+      return true;
+    if (!this.registry.mountRecordsEqual(runtime.mounts, next.mounts))
+      return true;
+    if (runtime.public !== next.public) return true;
+    if (runtime.cpu !== next.resources.cpu) return true;
+    if (runtime.memoryMiB !== next.resources.memoryMiB) return true;
+    if (runtime.diskGiB !== next.resources.diskGiB) return true;
+    if ((runtime.autoStopMinutes ?? null) !== next.autoStopMinutes) return true;
+    if (runtime.ephemeral !== next.ephemeral) return true;
+    return false;
+  }
+
+  private async requireRuntime(
+    sandboxIdOrName: string,
+  ): Promise<RuntimeEntity> {
+    const runtime =
+      await this.registry.findRuntimeBySandboxIdOrName(sandboxIdOrName);
+    if (!runtime) {
+      throw new NotFoundException(`Sandbox not found: ${sandboxIdOrName}`);
+    }
+    return runtime;
+  }
+
+  private async requireRunningRuntime(
+    sandboxIdOrName: string,
+  ): Promise<RuntimeEntity> {
+    const runtime = await this.syncStatus(
+      await this.requireRuntime(sandboxIdOrName),
+    );
+    if (runtime.status !== 'running') {
+      throw new ConflictException(
+        `Sandbox is not running: ${runtime.sandboxId}`,
       );
     }
     return runtime;
   }
 
-  private async ensureConnectable(
-    runtime: RuntimeEntity,
-  ): Promise<RuntimeEntity> {
+  private async requireVolume(volumeIdOrName: string): Promise<VolumeEntity> {
+    const volume = await this.registry.findVolumeByIdOrName(volumeIdOrName);
+    if (!volume) {
+      throw new NotFoundException(`Volume not found: ${volumeIdOrName}`);
+    }
+    return volume;
+  }
+
+  private async syncStatus(runtime: RuntimeEntity): Promise<RuntimeEntity> {
     const status = await this.microsandbox.getStatus(runtime.sandboxName);
-    if (status === 'running' && (await this.waitForHealthy(runtime.hostPort))) {
-      if (runtime.status !== 'running') {
-        return this.registry.setRuntimeStatus(runtime, 'running', 'healthy');
-      }
-      return runtime;
+    const normalized = this.normalizeStatus(status);
+    if (normalized !== runtime.status) {
+      return this.registry.updateRuntime(runtime, { status: normalized });
     }
-
-    if (status === 'running' || status === 'stopped' || status === 'draining') {
-      return this.reviveRuntime(runtime, [], status);
-    }
-
-    if (status === null) {
-      await this.registry.setRuntimeStatus(runtime, 'error', 'sandbox_missing');
-      throw new ServiceUnavailableException(
-        `Runtime sandbox missing for sandboxId=${runtime.sandboxId}`,
-      );
-    }
-
-    await this.registry.setRuntimeStatus(
-      runtime,
-      'error',
-      `runtime_unavailable:${status}`,
-    );
-    throw new ServiceUnavailableException(
-      `Runtime is unavailable for sandboxId=${runtime.sandboxId}`,
-    );
+    return runtime;
   }
 
-  private async reviveRuntime(
-    runtime: RuntimeEntity,
-    files: RuntimeFileDto[],
-    status: string,
+  private normalizeStatus(status: string | null): RuntimeEntity['status'] {
+    if (status === 'running') return 'running';
+    if (status === 'stopped') return 'stopped';
+    if (status === 'draining') return 'draining';
+    return 'error';
+  }
+
+  private async ensurePreviewable(
+    sandboxIdOrName: string,
+    port: number,
   ): Promise<RuntimeEntity> {
-    if (status === 'running') {
-      await this.microsandbox.stop(runtime.sandboxName).catch(() => undefined);
-    }
-    await this.microsandbox.start(runtime.sandboxName);
-    if (files.length > 0) {
-      await this.microsandbox.writeFiles(runtime.sandboxName, files);
-    }
-    const healthy = await this.waitForHealthy(runtime.hostPort);
-    if (!healthy) {
-      return this.registry.setRuntimeStatus(
-        runtime,
-        'error',
-        'runtime_unhealthy_after_restart',
+    const runtime = await this.requireRunningRuntime(sandboxIdOrName);
+    this.findBinding(runtime, port);
+    return runtime;
+  }
+
+  private resolveProxyTarget(
+    runtime: RuntimeEntity,
+    port: number,
+  ): { runtime: RuntimeEntity; hostPort: number } {
+    const binding = this.findBinding(runtime, port);
+    return { runtime, hostPort: binding.hostPort };
+  }
+
+  private findBinding(
+    runtime: RuntimeEntity,
+    port: number,
+  ): RuntimePortBindingRecord {
+    const binding = (runtime.portBindings ?? []).find(
+      (entry) => entry.containerPort === port,
+    );
+    if (!binding) {
+      throw new NotFoundException(
+        `Port ${port} is not exposed for sandbox ${runtime.sandboxId}`,
       );
     }
-    return this.registry.updateRuntime(runtime, {
-      status: 'running',
-      statusReason: 'restarted',
-      lastActiveAt: new Date(),
-    });
+    return binding;
   }
 
-  private async waitForHealthy(hostPort: number): Promise<boolean> {
-    const deadline = Date.now() + this.config.runtimeReadyTimeoutMs;
-    do {
-      if (await this.microsandbox.isHealthy(hostPort)) {
-        return true;
-      }
-      await this.delay(this.config.runtimeReadyPollIntervalMs);
-    } while (Date.now() < deadline);
-    return false;
-  }
-
-  private resolvePort(port?: RuntimePortDto): {
-    containerPort: number;
-    protocol: 'tcp' | 'udp';
-  } {
-    return {
-      containerPort: port?.containerPort ?? this.config.defaultExposedPort,
-      protocol: port?.protocol ?? 'tcp',
-    };
+  private tokensEqual(actual: string, candidate: string): boolean {
+    const actualBuffer = Buffer.from(actual);
+    const candidateBuffer = Buffer.from(candidate);
+    return (
+      actualBuffer.length === candidateBuffer.length &&
+      timingSafeEqual(actualBuffer, candidateBuffer)
+    );
   }
 
   private buildRuntimeFiles(files: RuntimeFileDto[]): RuntimeFileDto[] {
-    return files
-      .map((file) => ({
-        path: String(file.path ?? '').trim(),
-        content: String(file.content ?? ''),
-      }))
-      .filter((file) => file.path.length > 0);
+    return files.map((file) => ({
+      path: file.path,
+      content: file.content,
+    }));
   }
 
   private buildRuntimeSecrets(
     secrets: RuntimeSecretDto[],
-  ): RuntimeSecretInput[] {
-    return secrets
-      .map((secret) => ({
-        env: String(secret.env ?? '').trim(),
-        value: String(secret.value ?? ''),
-        placeholder: String(secret.placeholder ?? '').trim() || undefined,
-        allowedHosts: (secret.allowedHosts ?? [])
-          .map((host) => String(host ?? '').trim())
-          .filter((host) => host.length > 0),
-        allowedHostPatterns: (secret.allowedHostPatterns ?? [])
-          .map((pattern) => String(pattern ?? '').trim())
-          .filter((pattern) => pattern.length > 0),
-        allowAnyHostDangerous: secret.allowAnyHostDangerous === true,
-        requireTlsIdentity: secret.requireTlsIdentity,
-        injectHeaders: secret.injectHeaders,
-        injectBasicAuth: secret.injectBasicAuth,
-        injectQuery: secret.injectQuery,
-        injectBody: secret.injectBody,
-      }))
-      .filter((secret) => secret.env.length > 0 && secret.value.length > 0);
+  ): RuntimeSecretRecord[] {
+    return secrets.map((secret) => ({
+      env: secret.env,
+      value: secret.value,
+      placeholder: secret.placeholder,
+      allowedHosts: secret.allowedHosts ?? [],
+      allowedHostPatterns: secret.allowedHostPatterns ?? [],
+      allowAnyHostDangerous: secret.allowAnyHostDangerous,
+      requireTlsIdentity: secret.requireTlsIdentity,
+      injectHeaders: secret.injectHeaders,
+      injectBasicAuth: secret.injectBasicAuth,
+      injectQuery: secret.injectQuery,
+      injectBody: secret.injectBody,
+    }));
   }
 
-  private normalizeStatus(status: string): RuntimeEntity['status'] {
-    if (status === 'running') return 'running';
-    if (status === 'stopped') return 'stopped';
-    if (status === 'draining') return 'draining';
-    if (status === 'crashed') return 'error';
-    return 'error';
-  }
-
-  private requiresRecreate(
-    runtime: RuntimeEntity,
-    next: {
-      image: string;
-      command: string[] | null;
-      env: Record<string, string>;
-      secrets: RuntimeSecretInput[];
-      workingDir: string | null;
-      containerPort: number;
-      protocol: 'tcp' | 'udp';
-      volumeMountPath: string | null;
-      persistentVolume: boolean;
-    },
-  ): boolean {
-    if (runtime.image !== next.image) return true;
-    if (!this.stringArrayEquals(runtime.command ?? null, next.command))
-      return true;
-    if (
-      this.stableStringify(runtime.environment ?? {}) !==
-      this.stableStringify(next.env)
-    ) {
-      return true;
-    }
-    if (
-      this.stableStringify(runtime.secrets ?? []) !==
-      this.stableStringify(next.secrets)
-    ) {
-      return true;
-    }
-    if ((runtime.workingDir ?? null) !== next.workingDir) return true;
-    if (runtime.primaryPort !== next.containerPort) return true;
-    if ((runtime.primaryPortProtocol ?? 'tcp') !== next.protocol) return true;
-    if (Boolean(runtime.volumeName) !== next.persistentVolume) return true;
-    if ((runtime.volumeMountPath ?? null) !== next.volumeMountPath) return true;
+  private async waitForHealthy(port: number): Promise<boolean> {
+    const deadline = Date.now() + this.config.runtimeReadyTimeoutMs;
+    do {
+      if (await this.microsandbox.isHealthy(port)) {
+        return true;
+      }
+      await new Promise((resolve) =>
+        setTimeout(resolve, this.config.runtimeReadyPollIntervalMs),
+      );
+    } while (Date.now() < deadline);
     return false;
   }
 
-  private stringArrayEquals(
-    left: string[] | null,
-    right: string[] | null,
-  ): boolean {
-    if (!left && !right) return true;
-    if (!left || !right) return false;
-    if (left.length !== right.length) return false;
-    return left.every((item, index) => item === right[index]);
+  private volumeSummary(volume: VolumeEntity): Record<string, unknown> {
+    return {
+      volumeId: volume.id,
+      name: volume.name,
+      quotaMiB: volume.quotaMiB,
+      createdAt: volume.createdAt?.toISOString() ?? null,
+      updatedAt: volume.updatedAt?.toISOString() ?? null,
+    };
   }
 
-  private stableStringify(value: unknown): string {
-    return JSON.stringify(this.toStableValue(value));
-  }
-
-  private toStableValue(value: unknown): unknown {
-    if (Array.isArray(value)) {
-      return value.map((item) => this.toStableValue(item));
+  private firstPortBinding(
+    ports: RuntimePortBindingRecord[],
+  ): RuntimePortBindingRecord {
+    const firstPort = ports[0];
+    if (!firstPort) {
+      throw new ConflictException('At least one port binding is required');
     }
-    if (!value || typeof value !== 'object') {
-      return value;
-    }
-    const record = value as Record<string, unknown>;
-    const out: Record<string, unknown> = {};
-    for (const key of Object.keys(record).sort()) {
-      out[key] = this.toStableValue(record[key]);
-    }
-    return out;
-  }
-
-  private delay(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
+    return firstPort;
   }
 }

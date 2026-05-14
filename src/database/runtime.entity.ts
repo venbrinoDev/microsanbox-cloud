@@ -30,8 +30,24 @@ export interface RuntimeSecretRecord {
   injectBody?: boolean;
 }
 
+export interface RuntimePortBindingRecord {
+  name?: string;
+  containerPort: number;
+  hostPort: number;
+  protocol: 'tcp' | 'udp';
+}
+
+export interface RuntimeVolumeMountRecord {
+  volumeId: string;
+  volumeName: string;
+  mountPath: string;
+  subpath?: string;
+  readOnly?: boolean;
+}
+
 @Entity({ name: 'runtimes' })
 @Unique(['sandboxId'])
+@Unique(['name'])
 export class RuntimeEntity {
   @PrimaryGeneratedColumn('uuid')
   id!: string;
@@ -39,23 +55,32 @@ export class RuntimeEntity {
   @Column({ type: 'varchar' })
   sandboxId!: string;
 
+  @Column({ type: 'varchar', nullable: true })
+  name!: string | null;
+
   @Column({ type: 'varchar' })
   sandboxName!: string;
-
-  @Column({ type: 'varchar', nullable: true })
-  volumeName!: string | null;
-
-  @Column({ type: 'varchar', nullable: true })
-  volumeMountPath!: string | null;
 
   @Column({ type: 'varchar' })
   runtimeHostId!: string;
 
-  @Column({ type: 'int' })
-  hostPort!: number;
+  @Column({ type: 'simple-json' })
+  portBindings!: RuntimePortBindingRecord[];
 
   @Column({ type: 'int' })
   primaryPort!: number;
+
+  @Column({ type: 'int' })
+  hostPort!: number;
+
+  @Column({ type: 'varchar', default: 'tcp' })
+  primaryPortProtocol!: 'tcp' | 'udp';
+
+  @Column({ type: 'boolean', default: false })
+  public!: boolean;
+
+  @Column({ type: 'varchar' })
+  authToken!: string;
 
   @Column({ type: 'varchar' })
   status!: RuntimeStatus;
@@ -75,8 +100,23 @@ export class RuntimeEntity {
   @Column({ type: 'varchar', nullable: true })
   workingDir!: string | null;
 
-  @Column({ type: 'varchar', default: 'tcp' })
-  primaryPortProtocol!: 'tcp' | 'udp';
+  @Column({ type: 'simple-json', nullable: true })
+  mounts!: RuntimeVolumeMountRecord[] | null;
+
+  @Column({ type: 'int', default: 1 })
+  cpu!: number;
+
+  @Column({ type: 'int', default: 2048 })
+  memoryMiB!: number;
+
+  @Column({ type: 'int', default: 6 })
+  diskGiB!: number;
+
+  @Column({ type: 'int', nullable: true })
+  autoStopMinutes!: number | null;
+
+  @Column({ type: 'boolean', default: false })
+  ephemeral!: boolean;
 
   @Column({ type: 'datetime', nullable: true })
   lastActiveAt!: Date | null;

@@ -1,11 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import {
-  MiB,
-  Sandbox,
-  type SandboxHandle,
-  Volume,
-  type VolumeHandle,
-} from 'microsandbox';
+import { MiB, Sandbox, type SandboxHandle } from 'microsandbox';
 import { posix as pathPosix } from 'node:path';
 import { AppConfigService } from '../config/app-config.service.js';
 import { RuntimeFileDto } from '../runtime-control/dto/ensure-runtime.dto.js';
@@ -58,17 +52,6 @@ export class MicrosandboxAdapterService implements MicrosandboxAdapter {
     }
   }
 
-  async ensureVolume(
-    name: string,
-    quotaMiB: number,
-  ): Promise<Volume | VolumeHandle> {
-    try {
-      return await Volume.get(name);
-    } catch {
-      return Volume.builder(name).quota(MiB(quotaMiB)).create();
-    }
-  }
-
   async createDetachedRuntime(input: CreateRuntimeInput): Promise<void> {
     const builder = Sandbox.builder(input.sandboxName)
       .replace()
@@ -80,7 +63,7 @@ export class MicrosandboxAdapterService implements MicrosandboxAdapter {
           patch,
           input.files,
           input.workingDir,
-          input.volumeMountPath,
+          input.mounts,
         ),
       )
       .envs({
@@ -104,15 +87,13 @@ export class MicrosandboxAdapterService implements MicrosandboxAdapter {
     if (input.workingDir) {
       builder.workdir(input.workingDir);
     }
-    if (input.volumeName && input.volumeMountPath) {
-      await this.ensureVolume(
-        input.volumeName,
-        Math.max(128, input.diskGiB * 1024),
-      );
+    for (const mount of input.mounts) {
       builder.volume(
-        input.volumeMountPath,
-        (mount: { named(name: string): unknown }) =>
-          mount.named(input.volumeName as string),
+        mount.mountPath,
+        (builderInstance: { bind(host: string): { readonly(): unknown } }) => {
+          const base = builderInstance.bind(mount.hostPath);
+          return mount.readOnly ? base.readonly() : base;
+        },
       );
     }
 
@@ -166,7 +147,7 @@ export class MicrosandboxAdapterService implements MicrosandboxAdapter {
     await handle.stop();
   }
 
-  async remove(name: string, volumeName?: string | null): Promise<void> {
+  async remove(name: string): Promise<void> {
     const handle = await this.getSandboxHandle(name);
     if (handle) {
       try {
@@ -176,13 +157,6 @@ export class MicrosandboxAdapterService implements MicrosandboxAdapter {
       }
       await this.waitForSandboxStop(name);
       await handle.remove();
-    }
-    if (volumeName) {
-      try {
-        await Volume.remove(volumeName);
-      } catch {
-        // Missing volumes are acceptable during idempotent deletion.
-      }
     }
   }
 
@@ -219,6 +193,31 @@ export class MicrosandboxAdapterService implements MicrosandboxAdapter {
         : await handle.startDetached();
     try {
       await this.writeFilesToSandbox(sandbox, files);
+    } finally {
+      await sandbox.detach();
+    }
+  }
+
+  async readFiles(
+    name: string,
+    paths: string[],
+  ): Promise<Array<{ path: string; content: string }>> {
+    if (paths.length === 0) {
+      return [];
+    }
+    const handle = await Sandbox.get(name);
+    const sandbox =
+      handle.status === 'running'
+        ? await handle.connect()
+        : await handle.startDetached();
+    try {
+      const fs = sandbox.fs();
+      const results: Array<{ path: string; content: string }> = [];
+      for (const filePath of paths) {
+        const content = await fs.readToString(filePath);
+        results.push({ path: filePath, content });
+      }
+      return results;
     } finally {
       await sandbox.detach();
     }
@@ -279,9 +278,11 @@ export class MicrosandboxAdapterService implements MicrosandboxAdapter {
     patch: BootstrapPatchBuilder,
     files: RuntimeFileDto[],
     workingDir?: string | null,
-    volumeMountPath?: string | null,
+    mounts: Array<{
+      mountPath: string;
+    }> = [],
   ) {
-    for (const dir of this.bootstrapDirectories(workingDir, volumeMountPath)) {
+    for (const dir of this.bootstrapDirectories(workingDir, mounts)) {
       patch.mkdir(dir, { mode: 0o755 });
     }
     for (const file of files) {
@@ -295,7 +296,9 @@ export class MicrosandboxAdapterService implements MicrosandboxAdapter {
 
   private bootstrapDirectories(
     workingDir?: string | null,
-    volumeMountPath?: string | null,
+    mounts: Array<{
+      mountPath: string;
+    }> = [],
   ): string[] {
     const dirs = new Set<string>();
     if (workingDir) {
@@ -304,11 +307,11 @@ export class MicrosandboxAdapterService implements MicrosandboxAdapter {
       }
       dirs.add(pathPosix.normalize(workingDir));
     }
-    if (volumeMountPath) {
-      for (const dir of this.parentDirectories(`${volumeMountPath}/.keep`)) {
+    for (const mount of mounts) {
+      for (const dir of this.parentDirectories(`${mount.mountPath}/.keep`)) {
         dirs.add(dir);
       }
-      dirs.add(pathPosix.normalize(volumeMountPath));
+      dirs.add(pathPosix.normalize(mount.mountPath));
     }
     return [...dirs];
   }

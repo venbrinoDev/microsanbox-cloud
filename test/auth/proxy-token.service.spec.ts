@@ -1,6 +1,6 @@
 import { UnauthorizedException } from '@nestjs/common';
-import { AppConfigService } from '../config/app-config.service.js';
-import { ProxyTokenService } from './proxy-token.service.js';
+import { AppConfigService } from '../../src/config/app-config.service.js';
+import { ProxyTokenService } from '../../src/auth/proxy-token.service.js';
 
 describe('ProxyTokenService', () => {
   let originalSecret: string | undefined;

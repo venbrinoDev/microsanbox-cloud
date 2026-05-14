@@ -1,11 +1,13 @@
 import { Test } from '@nestjs/testing';
 import { TypeOrmModule } from '@nestjs/typeorm';
-import { AppConfigService } from '../config/app-config.service.js';
-import { PortLeaseEntity } from '../database/port-lease.entity.js';
-import { RuntimeHostEntity } from '../database/runtime-host.entity.js';
-import { RuntimeEntity } from '../database/runtime.entity.js';
-import { RuntimeIdentityService } from '../runtime-control/runtime-identity.service.js';
-import { RuntimeRegistryService } from './runtime-registry.service.js';
+import { AppConfigService } from '../../src/config/app-config.service.js';
+import { PortLeaseEntity } from '../../src/database/port-lease.entity.js';
+import { RuntimeHostEntity } from '../../src/database/runtime-host.entity.js';
+import { RuntimeEntity } from '../../src/database/runtime.entity.js';
+import { SignedPreviewTokenEntity } from '../../src/database/signed-preview-token.entity.js';
+import { VolumeEntity } from '../../src/database/volume.entity.js';
+import { RuntimeIdentityService } from '../../src/runtime-control/runtime-identity.service.js';
+import { RuntimeRegistryService } from '../../src/runtime-registry/runtime-registry.service.js';
 
 describe('RuntimeRegistryService', () => {
   it('allocates ports from the configured range without collisions', async () => {
@@ -14,13 +16,21 @@ describe('RuntimeRegistryService', () => {
         TypeOrmModule.forRoot({
           type: 'sqlite',
           database: ':memory:',
-          entities: [RuntimeHostEntity, RuntimeEntity, PortLeaseEntity],
+          entities: [
+            RuntimeHostEntity,
+            RuntimeEntity,
+            PortLeaseEntity,
+            VolumeEntity,
+            SignedPreviewTokenEntity,
+          ],
           synchronize: true,
         }),
         TypeOrmModule.forFeature([
           RuntimeHostEntity,
           RuntimeEntity,
           PortLeaseEntity,
+          VolumeEntity,
+          SignedPreviewTokenEntity,
         ]),
       ],
       providers: [
@@ -35,6 +45,7 @@ describe('RuntimeRegistryService', () => {
             portRangeEnd: 31001,
             sandboxNamePrefix: 'runtime',
             volumeNamePrefix: 'runtime-data',
+            managedVolumeRoot: '/tmp/microsandbox-cloud-test-volumes',
           },
         },
         RuntimeIdentityService,
@@ -46,40 +57,58 @@ describe('RuntimeRegistryService', () => {
 
     const runtimeA = await registry.saveRuntime({
       sandboxId: 'a',
+      name: 'a',
       sandboxName: 'runtime-a',
-      volumeName: 'runtime-data-a',
-      volumeMountPath: '/workspace',
       runtimeHostId: registry.localHostId,
+      portBindings: [],
       hostPort: 0,
       primaryPort: 8080,
       primaryPortProtocol: 'tcp',
+      public: false,
+      authToken: 'token-a',
       status: 'provisioning',
       image: 'image:a',
       command: ['nginx', '-g', 'daemon off;'],
       environment: {},
+      secrets: [],
       workingDir: '/workspace',
+      mounts: [],
+      cpu: 1,
+      memoryMiB: 512,
+      diskGiB: 2,
+      autoStopMinutes: null,
+      ephemeral: false,
       lastActiveAt: new Date(),
     });
     const runtimeB = await registry.saveRuntime({
       sandboxId: 'b',
+      name: 'b',
       sandboxName: 'runtime-b',
-      volumeName: 'runtime-data-b',
-      volumeMountPath: '/workspace',
       runtimeHostId: registry.localHostId,
+      portBindings: [],
       hostPort: 0,
       primaryPort: 8080,
       primaryPortProtocol: 'tcp',
+      public: false,
+      authToken: 'token-b',
       status: 'provisioning',
       image: 'image:b',
       command: ['nginx', '-g', 'daemon off;'],
       environment: {},
+      secrets: [],
       workingDir: '/workspace',
+      mounts: [],
+      cpu: 1,
+      memoryMiB: 512,
+      diskGiB: 2,
+      autoStopMinutes: null,
+      ephemeral: false,
       lastActiveAt: new Date(),
     });
 
-    await expect(registry.leasePort(runtimeA.id)).resolves.toBe(31000);
-    await expect(registry.leasePort(runtimeB.id)).resolves.toBe(31001);
-    await expect(registry.leasePort('runtime-c')).rejects.toThrow(
+    await expect(registry.leasePorts(runtimeA.id, 1)).resolves.toEqual([31000]);
+    await expect(registry.leasePorts(runtimeB.id, 1)).resolves.toEqual([31001]);
+    await expect(registry.leasePorts('runtime-c', 1)).rejects.toThrow(
       'No free runtime ports available',
     );
 

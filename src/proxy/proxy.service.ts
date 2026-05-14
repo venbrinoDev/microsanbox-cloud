@@ -1,11 +1,25 @@
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import httpProxy from 'http-proxy';
-
-const createProxyServer = httpProxy.createProxyServer.bind(httpProxy);
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Socket } from 'node:net';
-import { ProxyTokenService } from '../auth/proxy-token.service.js';
 import { RuntimeControlService } from '../runtime-control/runtime-control.service.js';
+
+const createProxyServer = httpProxy.createProxyServer.bind(httpProxy);
+
+type StandardProxyMatch = {
+  kind: 'standard';
+  sandboxId: string;
+  port: number;
+  path: string;
+  token?: string | null;
+};
+
+type SignedProxyMatch = {
+  kind: 'signed';
+  token: string;
+  port: number;
+  path: string;
+};
 
 @Injectable()
 export class ProxyService {
@@ -15,11 +29,8 @@ export class ProxyService {
     xfwd: true,
   });
 
-  constructor(
-    private readonly runtimeControl: RuntimeControlService,
-    private readonly tokens: ProxyTokenService,
-  ) {
-    this.proxy.on('error', (error, _req, res) => {
+  constructor(private readonly runtimeControl: RuntimeControlService) {
+    this.proxy.on('error', (_error, _req, res) => {
       if (this.isServerResponse(res)) {
         if (!res.headersSent) {
           res.writeHead(502, { 'Content-Type': 'application/json' });
@@ -27,12 +38,11 @@ export class ProxyService {
         res.end(
           JSON.stringify({
             statusCode: 502,
-            message: error.message || 'Upstream proxy error',
+            message: 'Upstream proxy error',
           }),
         );
         return;
       }
-
       if (this.isSocket(res)) {
         res.destroy();
       }
@@ -40,61 +50,116 @@ export class ProxyService {
   }
 
   async handleHttp(
-    req: IncomingMessage & { url?: string },
+    req: IncomingMessage & {
+      url?: string;
+      headers: Record<string, string | string[] | undefined>;
+    },
     res: ServerResponse,
   ): Promise<void> {
-    const match = this.extract(req.url ?? '');
+    const match = this.extract(req.url ?? '', req.headers);
     if (!match) {
       res.statusCode = 404;
       res.end('Not found');
       return;
     }
 
-    this.tokens.verify(match.token, match.sandboxId);
-    const runtime = await this.runtimeControl.connection(match.sandboxId);
+    const target =
+      match.kind === 'signed'
+        ? await this.runtimeControl.validateProxyAccessBySignedToken(
+            match.token,
+            match.port,
+          )
+        : await this.runtimeControl.validateProxyAccessBySandbox(
+            match.sandboxId,
+            match.port,
+            match.token,
+          );
+
     req.url = match.path;
     this.proxy.web(req, res, {
-      target: `http://127.0.0.1:${runtime.hostPort}`,
+      target: `http://127.0.0.1:${target.hostPort}`,
     });
   }
 
   async handleUpgrade(
-    req: IncomingMessage & { url?: string },
+    req: IncomingMessage & {
+      url?: string;
+      headers: Record<string, string | string[] | undefined>;
+    },
     socket: Socket,
     head: Buffer,
   ): Promise<void> {
-    const match = this.extract(req.url ?? '');
+    const match = this.extract(req.url ?? '', req.headers);
     if (!match) {
       socket.destroy();
       return;
     }
 
-    this.tokens.verify(match.token, match.sandboxId);
-    const runtime = await this.runtimeControl.connection(match.sandboxId);
+    const target =
+      match.kind === 'signed'
+        ? await this.runtimeControl.validateProxyAccessBySignedToken(
+            match.token,
+            match.port,
+          )
+        : await this.runtimeControl.validateProxyAccessBySandbox(
+            match.sandboxId,
+            match.port,
+            match.token,
+          );
+
     req.url = match.path;
     this.proxy.ws(req, socket, head, {
-      target: `http://127.0.0.1:${runtime.hostPort}`,
+      target: `http://127.0.0.1:${target.hostPort}`,
     });
   }
 
-  private extract(rawUrl: string): {
-    sandboxId: string;
-    path: string;
-    token: string;
-  } | null {
+  private extract(
+    rawUrl: string,
+    headers: Record<string, string | string[] | undefined>,
+  ): StandardProxyMatch | SignedProxyMatch | null {
     const base = new URL(rawUrl, 'http://localhost');
-    const match = /^\/proxy\/([^/]+)(\/.*)?$/.exec(base.pathname);
-    if (!match) {
+    const signedMatch = /^\/proxy\/signed\/([^/]+)\/ports\/(\d+)(\/.*)?$/.exec(
+      base.pathname,
+    );
+    if (signedMatch) {
+      return {
+        kind: 'signed',
+        token: decodeURIComponent(signedMatch[1]),
+        port: Number(signedMatch[2]),
+        path: `${signedMatch[3] || '/'}${base.search}`,
+      };
+    }
+
+    const standardMatch = /^\/proxy\/([^/]+)\/ports\/(\d+)(\/.*)?$/.exec(
+      base.pathname,
+    );
+    if (!standardMatch) {
       return null;
     }
-    const sandboxId = decodeURIComponent(match[1]);
-    const token = base.searchParams.get('token')?.trim() || '';
-    if (!token) {
-      throw new UnauthorizedException('Missing proxy token');
+    return {
+      kind: 'standard',
+      sandboxId: decodeURIComponent(standardMatch[1]),
+      port: Number(standardMatch[2]),
+      path: `${standardMatch[3] || '/'}${base.search}`,
+      token: this.readPreviewToken(headers, base.searchParams.get('token')),
+    };
+  }
+
+  private readPreviewToken(
+    headers: Record<string, string | string[] | undefined>,
+    queryToken: string | null,
+  ): string | null {
+    const header = headers['x-microsandbox-preview-token'];
+    if (typeof header === 'string' && header.trim()) {
+      return header.trim();
     }
-    base.searchParams.delete('token');
-    const path = `${match[2] || '/'}${base.search}`;
-    return { sandboxId, path, token };
+    if (Array.isArray(header)) {
+      const firstHeader = header[0];
+      if (typeof firstHeader === 'string' && firstHeader.trim()) {
+        return firstHeader.trim();
+      }
+    }
+    return queryToken?.trim() || null;
   }
 
   private isServerResponse(value: unknown): value is ServerResponse {
