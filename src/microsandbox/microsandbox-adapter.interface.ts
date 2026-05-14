@@ -41,8 +41,29 @@ export interface CreateRuntimeInput {
 }
 
 export interface MicrosandboxAdapter {
+  listCachedImages(): Promise<
+    Array<{
+      reference: string;
+      architecture: string | null;
+      os: string | null;
+      sizeBytes: number | null;
+      layerCount: number;
+    }>
+  >;
+  pullImage(reference: string): Promise<{
+    reference: string;
+    architecture: string | null;
+    os: string | null;
+    sizeBytes: number | null;
+    layerCount: number;
+    cached: boolean;
+  }>;
   createDetachedRuntime(input: CreateRuntimeInput): Promise<void>;
-  start(name: string, command?: string[] | null, workingDir?: string | null): Promise<void>;
+  start(
+    name: string,
+    command?: string[] | null,
+    workingDir?: string | null,
+  ): Promise<void>;
   stop(name: string): Promise<void>;
   remove(name: string, volumeName?: string | null): Promise<void>;
   exec(

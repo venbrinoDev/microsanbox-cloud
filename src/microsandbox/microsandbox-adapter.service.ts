@@ -1,6 +1,10 @@
 import { Injectable } from '@nestjs/common';
-import { MiB, Sandbox, type SandboxHandle } from 'microsandbox';
+import { MiB, Sandbox, Image, type SandboxHandle } from 'microsandbox';
+import { execFile as execFileCallback } from 'node:child_process';
 import { posix as pathPosix } from 'node:path';
+import { dirname, join } from 'node:path';
+import { promisify } from 'node:util';
+import { createRequire } from 'node:module';
 import { AppConfigService } from '../config/app-config.service.js';
 import { RuntimeFileDto } from '../runtime-control/dto/ensure-runtime.dto.js';
 import type {
@@ -40,9 +44,74 @@ type SecretBuilder = {
   injectBody(value: boolean): SecretBuilder;
 };
 
+const execFile = promisify(execFileCallback);
+const require = createRequire(import.meta.url);
+
 @Injectable()
 export class MicrosandboxAdapterService implements MicrosandboxAdapter {
   constructor(private readonly config: AppConfigService) {}
+
+  async listCachedImages(): Promise<
+    Array<{
+      reference: string;
+      architecture: string | null;
+      os: string | null;
+      sizeBytes: number | null;
+      layerCount: number;
+    }>
+  > {
+    const images = await Image.list();
+    return images.map((image) => ({
+      reference: image.reference,
+      architecture: image.architecture,
+      os: image.os,
+      sizeBytes: image.sizeBytes,
+      layerCount: image.layerCount,
+    }));
+  }
+
+  async pullImage(reference: string): Promise<{
+    reference: string;
+    architecture: string | null;
+    os: string | null;
+    sizeBytes: number | null;
+    layerCount: number;
+    cached: boolean;
+  }> {
+    const normalized = String(reference ?? '').trim();
+    if (!normalized) {
+      throw new Error('Image reference is required');
+    }
+
+    try {
+      const cached = await Image.get(normalized);
+      return {
+        reference: cached.reference,
+        architecture: cached.architecture,
+        os: cached.os,
+        sizeBytes: cached.sizeBytes,
+        layerCount: cached.layerCount,
+        cached: true,
+      };
+    } catch {
+      await execFile(
+        process.execPath,
+        [this.resolveMicrosandboxCliPath(), 'pull', normalized],
+        {
+          env: process.env,
+        },
+      );
+      const pulled = await Image.get(normalized);
+      return {
+        reference: pulled.reference,
+        architecture: pulled.architecture,
+        os: pulled.os,
+        sizeBytes: pulled.sizeBytes,
+        layerCount: pulled.layerCount,
+        cached: false,
+      };
+    }
+  }
 
   async getSandboxHandle(name: string): Promise<SandboxHandle | null> {
     try {
@@ -135,6 +204,11 @@ export class MicrosandboxAdapterService implements MicrosandboxAdapter {
       current = current.injectBody(secret.injectBody);
     }
     return current;
+  }
+
+  private resolveMicrosandboxCliPath(): string {
+    const packageJsonPath = require.resolve('microsandbox/package.json');
+    return join(dirname(packageJsonPath), 'bin', 'microsandbox.cjs');
   }
 
   async start(
@@ -380,7 +454,7 @@ export class MicrosandboxAdapterService implements MicrosandboxAdapter {
     if (/^[A-Za-z0-9_./:-]+$/.test(value)) {
       return value;
     }
-    return `'${value.replace(/'/g, `'\"'\"'`)}'`;
+    return `'${value.replace(/'/g, `'"'"'`)}'`;
   }
 
   private delay(ms: number): Promise<void> {

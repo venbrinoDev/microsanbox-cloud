@@ -164,6 +164,20 @@ export class SandboxController {
     return this.runtimeControl.deleteVolume(volumeIdOrName);
   }
 
+  @Get('images')
+  @UseGuards(InternalAuthGuard)
+  listImages(): Promise<Record<string, unknown>> {
+    return this.runtimeControl.listImages();
+  }
+
+  @Post('images/pull')
+  @UseGuards(InternalAuthGuard)
+  pullImage(
+    @Body() body: { reference?: string },
+  ): Promise<Record<string, unknown>> {
+    return this.runtimeControl.pullImage(String(body.reference ?? '').trim());
+  }
+
   @Get('preview/:sandboxId/public')
   previewPublic(
     @Param('sandboxId') sandboxId: string,

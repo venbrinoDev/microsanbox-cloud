@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   Inject,
   Injectable,
@@ -160,6 +161,19 @@ export class RuntimeControlService {
   async listVolumes(): Promise<RuntimeSummary> {
     const volumes = await this.registry.listVolumes();
     return { volumes: volumes.map((volume) => this.volumeSummary(volume)) };
+  }
+
+  async listImages(): Promise<RuntimeSummary> {
+    const images = await this.microsandbox.listCachedImages();
+    return { images };
+  }
+
+  async pullImage(reference: string): Promise<RuntimeSummary> {
+    if (!String(reference ?? '').trim()) {
+      throw new BadRequestException('Image reference is required');
+    }
+    const image = await this.microsandbox.pullImage(reference);
+    return image;
   }
 
   async getVolume(volumeIdOrName: string): Promise<RuntimeSummary> {
