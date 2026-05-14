@@ -97,7 +97,11 @@ export class RuntimeControlService {
 
   async start(sandboxIdOrName: string): Promise<RuntimeSummary> {
     let runtime = await this.requireRuntime(sandboxIdOrName);
-    await this.microsandbox.start(runtime.sandboxName);
+    await this.microsandbox.start(
+      runtime.sandboxName,
+      runtime.command,
+      runtime.workingDir,
+    );
     runtime = await this.registry.setRuntimeStatus(
       runtime,
       'running',

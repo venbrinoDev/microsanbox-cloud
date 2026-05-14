@@ -78,9 +78,6 @@ export class MicrosandboxAdapterService implements MicrosandboxAdapter {
       }
     }
 
-    if (input.command && input.command.length > 0) {
-      builder.entrypoint(input.command);
-    }
     for (const secret of input.secrets) {
       builder.secret((entry: SecretBuilder) => this.applySecret(entry, secret));
     }
@@ -98,7 +95,11 @@ export class MicrosandboxAdapterService implements MicrosandboxAdapter {
     }
 
     const sandbox = await builder.createDetached();
-    await sandbox.detach();
+    try {
+      await this.launchManagedCommand(sandbox, input.command, input.workingDir);
+    } finally {
+      await sandbox.detach();
+    }
   }
 
   private applySecret(
@@ -136,15 +137,24 @@ export class MicrosandboxAdapterService implements MicrosandboxAdapter {
     return current;
   }
 
-  async start(name: string): Promise<void> {
+  async start(
+    name: string,
+    command?: string[] | null,
+    workingDir?: string | null,
+  ): Promise<void> {
     const handle = await Sandbox.get(name);
     const sandbox = await handle.startDetached();
-    await sandbox.detach();
+    try {
+      await this.launchManagedCommand(sandbox, command, workingDir);
+    } finally {
+      await sandbox.detach();
+    }
   }
 
   async stop(name: string): Promise<void> {
     const handle = await Sandbox.get(name);
     await handle.stop();
+    await this.waitForSandboxStop(name);
   }
 
   async remove(name: string): Promise<void> {
@@ -334,6 +344,43 @@ export class MicrosandboxAdapterService implements MicrosandboxAdapter {
     for (const dir of this.parentDirectories(filePath)) {
       await fs.mkdir(dir).catch(() => undefined);
     }
+  }
+
+  private async launchManagedCommand(
+    sandbox: Sandbox,
+    command?: string[] | null,
+    workingDir?: string | null,
+  ): Promise<void> {
+    if (!command || command.length === 0) {
+      return;
+    }
+    const launchScript = this.buildLaunchScript(command, workingDir);
+    await sandbox.exec('sh', ['-lc', launchScript]);
+  }
+
+  private buildLaunchScript(
+    command: string[],
+    workingDir?: string | null,
+  ): string {
+    const steps: string[] = [];
+    if (workingDir?.trim()) {
+      steps.push(`cd ${this.shellEscape(workingDir.trim())}`);
+    }
+    steps.push(
+      `${this.toShellCommand(command)} >/tmp/microsandbox-app.log 2>&1 &`,
+    );
+    return steps.join(' && ');
+  }
+
+  private toShellCommand(command: string[]): string {
+    return command.map((part) => this.shellEscape(part)).join(' ');
+  }
+
+  private shellEscape(value: string): string {
+    if (/^[A-Za-z0-9_./:-]+$/.test(value)) {
+      return value;
+    }
+    return `'${value.replace(/'/g, `'\"'\"'`)}'`;
   }
 
   private delay(ms: number): Promise<void> {

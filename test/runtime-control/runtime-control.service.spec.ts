@@ -334,7 +334,11 @@ describe('RuntimeControlService', () => {
 
     const result = await service.start('runtime-1');
 
-    expect(microsandbox.start).toHaveBeenCalledWith('runtime-runtime-1');
+    expect(microsandbox.start).toHaveBeenCalledWith(
+      'runtime-runtime-1',
+      ['nginx', '-g', 'daemon off;'],
+      '/workspace',
+    );
     expect(result).toEqual({
       runtimeId: 'runtime-1',
       sandboxId: 'runtime-1',

@@ -42,7 +42,7 @@ export interface CreateRuntimeInput {
 
 export interface MicrosandboxAdapter {
   createDetachedRuntime(input: CreateRuntimeInput): Promise<void>;
-  start(name: string): Promise<void>;
+  start(name: string, command?: string[] | null, workingDir?: string | null): Promise<void>;
   stop(name: string): Promise<void>;
   remove(name: string, volumeName?: string | null): Promise<void>;
   exec(
