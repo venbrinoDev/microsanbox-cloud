@@ -14,10 +14,17 @@ import { DownloadFilesDto } from './dto/download-files.dto.js';
 import {
   EnsureRuntimeDto,
   CreateSandboxDto,
+  RuntimeRegistryAuthDto,
 } from './dto/ensure-runtime.dto.js';
 import { ExecRuntimeDto } from './dto/exec-runtime.dto.js';
 import { WriteFilesDto } from './dto/write-files.dto.js';
 import { RuntimeControlService } from './runtime-control.service.js';
+import type { RuntimeRegistryAuthInput } from '../microsandbox/microsandbox-adapter.interface.js';
+
+type PullImageBody = {
+  reference?: string;
+  registryAuth?: RuntimeRegistryAuthDto;
+};
 
 @Controller()
 export class SandboxController {
@@ -172,10 +179,30 @@ export class SandboxController {
 
   @Post('images/pull')
   @UseGuards(InternalAuthGuard)
-  pullImage(
-    @Body() body: { reference?: string },
-  ): Promise<Record<string, unknown>> {
-    return this.runtimeControl.pullImage(String(body.reference ?? '').trim());
+  pullImage(@Body() body: PullImageBody): Promise<Record<string, unknown>> {
+    return this.runtimeControl.pullImage(
+      String(body.reference ?? '').trim(),
+      this.normalizeRegistryAuth(body.registryAuth),
+    );
+  }
+
+  private normalizeRegistryAuth(
+    input: RuntimeRegistryAuthDto | undefined,
+  ): RuntimeRegistryAuthInput | null {
+    if (!input) {
+      return null;
+    }
+    const server = input.server.trim();
+    const username = input.username.trim();
+    const password = input.password;
+    if (!server || !username || !password) {
+      return null;
+    }
+    return {
+      server,
+      username,
+      password,
+    };
   }
 
   @Get('preview/:sandboxId/public')

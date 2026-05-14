@@ -19,6 +19,7 @@ import {
   MICROSANDBOX_ADAPTER,
   type CreateRuntimeInput,
   type MicrosandboxAdapter,
+  type RuntimeRegistryAuthInput,
 } from '../microsandbox/microsandbox-adapter.interface.js';
 import { RuntimeRegistryService } from '../runtime-registry/runtime-registry.service.js';
 import {
@@ -26,6 +27,7 @@ import {
   EnsureRuntimeDto,
   type RuntimeFileDto,
   type RuntimePortDto,
+  type RuntimeRegistryAuthDto,
   type RuntimeResourcesDto,
   type RuntimeSecretDto,
   type RuntimeVolumeMountDto,
@@ -33,6 +35,7 @@ import {
 
 type RuntimeSpec = {
   image: string;
+  registryAuth: RuntimeRegistryAuthInput | null;
   command: string[] | null;
   env: Record<string, string>;
   files: RuntimeFileDto[];
@@ -168,11 +171,14 @@ export class RuntimeControlService {
     return { images };
   }
 
-  async pullImage(reference: string): Promise<RuntimeSummary> {
+  async pullImage(
+    reference: string,
+    registryAuth?: CreateRuntimeInput['registryAuth'],
+  ): Promise<RuntimeSummary> {
     if (!String(reference ?? '').trim()) {
       throw new BadRequestException('Image reference is required');
     }
-    const image = await this.microsandbox.pullImage(reference);
+    const image = await this.microsandbox.pullImage(reference, registryAuth);
     return image;
   }
 
@@ -459,6 +465,7 @@ export class RuntimeControlService {
     await this.microsandbox.createDetachedRuntime({
       sandboxName: runtime.sandboxName,
       image: spec.image,
+      registryAuth: spec.registryAuth,
       command: spec.command,
       workingDir: spec.workingDir,
       ports: spec.ports,
@@ -515,6 +522,7 @@ export class RuntimeControlService {
     ports = ports.map((port) => ({ ...port, hostPort: 0 }));
     return {
       image: input.image?.trim() || this.config.defaultImage,
+      registryAuth: this.normalizeRegistryAuth(input.registryAuth),
       command: input.command?.length ? input.command : null,
       env: input.env ?? {},
       files,
@@ -527,6 +535,19 @@ export class RuntimeControlService {
       public: input.public === true,
       autoStopMinutes: input.autoStopMinutes ?? null,
       ephemeral: input.ephemeral === true,
+    };
+  }
+
+  private normalizeRegistryAuth(
+    input: RuntimeRegistryAuthDto | undefined,
+  ): RuntimeRegistryAuthInput | null {
+    if (!input) {
+      return null;
+    }
+    return {
+      server: input.server.trim(),
+      username: input.username.trim(),
+      password: input.password,
     };
   }
 

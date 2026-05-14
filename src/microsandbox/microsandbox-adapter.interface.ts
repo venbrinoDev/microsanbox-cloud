@@ -2,6 +2,12 @@ import type { RuntimeFileDto } from '../runtime-control/dto/ensure-runtime.dto.j
 
 export const MICROSANDBOX_ADAPTER = Symbol('MICROSANDBOX_ADAPTER');
 
+export interface RuntimeRegistryAuthInput {
+  server: string;
+  username: string;
+  password: string;
+}
+
 export interface RuntimeSecretInput {
   env: string;
   value: string;
@@ -19,6 +25,7 @@ export interface RuntimeSecretInput {
 export interface CreateRuntimeInput {
   sandboxName: string;
   image: string;
+  registryAuth?: RuntimeRegistryAuthInput | null;
   command?: string[] | null;
   workingDir?: string | null;
   ports: Array<{
@@ -50,7 +57,10 @@ export interface MicrosandboxAdapter {
       layerCount: number;
     }>
   >;
-  pullImage(reference: string): Promise<{
+  pullImage(
+    reference: string,
+    registryAuth?: RuntimeRegistryAuthInput | null,
+  ): Promise<{
     reference: string;
     architecture: string | null;
     os: string | null;

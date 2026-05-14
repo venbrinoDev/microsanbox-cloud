@@ -1,10 +1,13 @@
-import { Injectable } from '@nestjs/common';
-import { MiB, Sandbox, Image, type SandboxHandle } from 'microsandbox';
-import { execFile as execFileCallback } from 'node:child_process';
+import { Injectable, ServiceUnavailableException } from '@nestjs/common';
+import {
+  MiB,
+  Sandbox,
+  Image,
+  isInstalled,
+  type SandboxHandle,
+} from 'microsandbox';
+import { spawn } from 'node:child_process';
 import { posix as pathPosix } from 'node:path';
-import { dirname, join } from 'node:path';
-import { promisify } from 'node:util';
-import { createRequire } from 'node:module';
 import { AppConfigService } from '../config/app-config.service.js';
 import { RuntimeFileDto } from '../runtime-control/dto/ensure-runtime.dto.js';
 import type {
@@ -44,8 +47,13 @@ type SecretBuilder = {
   injectBody(value: boolean): SecretBuilder;
 };
 
-const execFile = promisify(execFileCallback);
-const require = createRequire(import.meta.url);
+type RegistryConfigBuilderLike = {
+  auth(auth: {
+    kind: string;
+    username: string;
+    password: string;
+  }): RegistryConfigBuilderLike;
+};
 
 @Injectable()
 export class MicrosandboxAdapterService implements MicrosandboxAdapter {
@@ -70,7 +78,14 @@ export class MicrosandboxAdapterService implements MicrosandboxAdapter {
     }));
   }
 
-  async pullImage(reference: string): Promise<{
+  async pullImage(
+    reference: string,
+    registryAuth?: {
+      server: string;
+      username: string;
+      password: string;
+    } | null,
+  ): Promise<{
     reference: string;
     architecture: string | null;
     os: string | null;
@@ -94,13 +109,22 @@ export class MicrosandboxAdapterService implements MicrosandboxAdapter {
         cached: true,
       };
     } catch {
-      await execFile(
-        process.execPath,
-        [this.resolveMicrosandboxCliPath(), 'pull', normalized],
-        {
-          env: process.env,
-        },
-      );
+      this.ensureMicrosandboxRuntimeInstalled();
+      try {
+        await this.runMicrosandboxCli(['pull', normalized]);
+      } catch (anonymousError) {
+        if (!registryAuth) {
+          throw anonymousError;
+        }
+        await this.loginRegistry(registryAuth);
+        try {
+          await this.runMicrosandboxCli(['pull', normalized]);
+        } finally {
+          await this.logoutRegistry(registryAuth.server).catch(() => {
+            // Best effort only; a failed logout must not mask the pull result.
+          });
+        }
+      }
       const pulled = await Image.get(normalized);
       return {
         reference: pulled.reference,
@@ -138,6 +162,16 @@ export class MicrosandboxAdapterService implements MicrosandboxAdapter {
       .envs({
         ...input.env,
       });
+
+    if (input.registryAuth) {
+      builder.registry((registry: RegistryConfigBuilderLike) =>
+        registry.auth({
+          kind: 'basic',
+          username: input.registryAuth!.username,
+          password: input.registryAuth!.password,
+        }),
+      );
+    }
 
     for (const port of input.ports) {
       if (port.protocol === 'udp') {
@@ -206,9 +240,80 @@ export class MicrosandboxAdapterService implements MicrosandboxAdapter {
     return current;
   }
 
-  private resolveMicrosandboxCliPath(): string {
-    const packageJsonPath = require.resolve('microsandbox/package.json');
-    return join(dirname(packageJsonPath), 'bin', 'microsandbox.cjs');
+  private ensureMicrosandboxRuntimeInstalled(): void {
+    if (!isInstalled()) {
+      throw new ServiceUnavailableException(
+        'Microsandbox runtime is not installed on this host. Install Microsandbox before pulling or provisioning images.',
+      );
+    }
+  }
+
+  private async loginRegistry(registryAuth: {
+    server: string;
+    username: string;
+    password: string;
+  }): Promise<void> {
+    await this.runMicrosandboxCli(
+      [
+        'registry',
+        'login',
+        '--username',
+        registryAuth.username,
+        '--password-stdin',
+        registryAuth.server,
+      ],
+      registryAuth.password,
+    );
+  }
+
+  private async logoutRegistry(server: string): Promise<void> {
+    await this.runMicrosandboxCli(['registry', 'logout', server]);
+  }
+
+  private async runMicrosandboxCli(
+    args: string[],
+    stdin?: string,
+  ): Promise<void> {
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn('msb', args, {
+        env: process.env,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+
+      let stderr = '';
+      child.stderr.on('data', (chunk: Buffer | string) => {
+        stderr += String(chunk);
+      });
+
+      child.on('error', (error: NodeJS.ErrnoException) => {
+        if (error.code === 'ENOENT') {
+          reject(
+            new ServiceUnavailableException(
+              'Microsandbox CLI is not installed on this host. Install the microsandbox package so image warming can run.',
+            ),
+          );
+          return;
+        }
+        reject(error);
+      });
+
+      child.on('close', (code) => {
+        if (code === 0) {
+          resolve();
+          return;
+        }
+        reject(
+          new ServiceUnavailableException(
+            `Microsandbox CLI command failed: ${stderr.trim() || args.join(' ')}`,
+          ),
+        );
+      });
+
+      if (stdin !== undefined) {
+        child.stdin.write(stdin);
+      }
+      child.stdin.end();
+    });
   }
 
   async start(

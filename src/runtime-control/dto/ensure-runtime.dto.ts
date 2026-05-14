@@ -112,6 +112,17 @@ export class RuntimeVolumeMountDto {
   readOnly?: boolean;
 }
 
+export class RuntimeRegistryAuthDto {
+  @IsString()
+  server!: string;
+
+  @IsString()
+  username!: string;
+
+  @IsString()
+  password!: string;
+}
+
 class SandboxSpecDto {
   @IsOptional()
   @IsString()
@@ -167,6 +178,11 @@ class SandboxSpecDto {
   @ValidateNested({ each: true })
   @Type(() => RuntimeVolumeMountDto)
   volumes?: RuntimeVolumeMountDto[];
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => RuntimeRegistryAuthDto)
+  registryAuth?: RuntimeRegistryAuthDto;
 
   @IsOptional()
   @IsBoolean()
