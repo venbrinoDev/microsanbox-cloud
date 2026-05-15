@@ -4,6 +4,7 @@ import {
   Sandbox,
   Image,
   isInstalled,
+  type Sandbox as MicrosandboxRuntime,
   type SandboxHandle,
 } from 'microsandbox';
 import { spawn } from 'node:child_process';
@@ -53,6 +54,39 @@ type RegistryConfigBuilderLike = {
     username: string;
     password: string;
   }): RegistryConfigBuilderLike;
+};
+
+type BoundVolumeHandleLike = {
+  readonly(): unknown;
+};
+
+type VolumeBinderLike = {
+  bind(host: string): BoundVolumeHandleLike;
+};
+
+type SandboxBuilderLike = {
+  replace(): SandboxBuilderLike;
+  image(value: string): SandboxBuilderLike;
+  cpus(value: number): SandboxBuilderLike;
+  memory(value: unknown): SandboxBuilderLike;
+  patch(
+    callback: (patch: BootstrapPatchBuilder) => BootstrapPatchBuilder,
+  ): SandboxBuilderLike;
+  envs(values: Record<string, string>): SandboxBuilderLike;
+  registry(
+    callback: (
+      registry: RegistryConfigBuilderLike,
+    ) => RegistryConfigBuilderLike,
+  ): SandboxBuilderLike;
+  port(hostPort: number, containerPort: number): SandboxBuilderLike;
+  portUdp(hostPort: number, containerPort: number): SandboxBuilderLike;
+  secret(callback: (entry: SecretBuilder) => SecretBuilder): SandboxBuilderLike;
+  workdir(value: string): SandboxBuilderLike;
+  volume(
+    mountPath: string,
+    callback: (builderInstance: VolumeBinderLike) => unknown,
+  ): SandboxBuilderLike;
+  createDetached(): Promise<MicrosandboxRuntime>;
 };
 
 @Injectable()
@@ -146,7 +180,10 @@ export class MicrosandboxAdapterService implements MicrosandboxAdapter {
   }
 
   async createDetachedRuntime(input: CreateRuntimeInput): Promise<void> {
-    const builder = Sandbox.builder(input.sandboxName)
+    const builder = Sandbox.builder(
+      input.sandboxName,
+    ) as unknown as SandboxBuilderLike;
+    const configuredBuilder = builder
       .replace()
       .image(input.image)
       .cpus(input.cpu)
@@ -163,41 +200,44 @@ export class MicrosandboxAdapterService implements MicrosandboxAdapter {
         ...input.env,
       });
 
-    if (input.registryAuth) {
-      builder.registry((registry: RegistryConfigBuilderLike) =>
+    const registryAuth = input.registryAuth;
+    if (registryAuth) {
+      configuredBuilder.registry((registry: RegistryConfigBuilderLike) =>
         registry.auth({
           kind: 'basic',
-          username: input.registryAuth!.username,
-          password: input.registryAuth!.password,
+          username: registryAuth.username,
+          password: registryAuth.password,
         }),
       );
     }
 
     for (const port of input.ports) {
       if (port.protocol === 'udp') {
-        builder.portUdp(port.hostPort, port.containerPort);
+        configuredBuilder.portUdp(port.hostPort, port.containerPort);
       } else {
-        builder.port(port.hostPort, port.containerPort);
+        configuredBuilder.port(port.hostPort, port.containerPort);
       }
     }
 
     for (const secret of input.secrets) {
-      builder.secret((entry: SecretBuilder) => this.applySecret(entry, secret));
+      configuredBuilder.secret((entry: SecretBuilder) =>
+        this.applySecret(entry, secret),
+      );
     }
     if (input.workingDir) {
-      builder.workdir(input.workingDir);
+      configuredBuilder.workdir(input.workingDir);
     }
     for (const mount of input.mounts) {
-      builder.volume(
+      configuredBuilder.volume(
         mount.mountPath,
-        (builderInstance: { bind(host: string): { readonly(): unknown } }) => {
+        (builderInstance: VolumeBinderLike) => {
           const base = builderInstance.bind(mount.hostPath);
           return mount.readOnly ? base.readonly() : base;
         },
       );
     }
 
-    const sandbox = await builder.createDetached();
+    const sandbox = await configuredBuilder.createDetached();
     try {
       await this.launchManagedCommand(sandbox, input.command, input.workingDir);
     } finally {

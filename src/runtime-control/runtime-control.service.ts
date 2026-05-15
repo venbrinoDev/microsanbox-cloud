@@ -27,7 +27,6 @@ import {
   EnsureRuntimeDto,
   type RuntimeFileDto,
   type RuntimePortDto,
-  type RuntimeRegistryAuthDto,
   type RuntimeResourcesDto,
   type RuntimeSecretDto,
   type RuntimeVolumeMountDto,
@@ -51,6 +50,12 @@ type RuntimeSpec = {
 };
 
 type RuntimeSummary = Record<string, unknown>;
+
+type RuntimeRegistryAuthLike = {
+  server: string;
+  username: string;
+  password: string;
+};
 
 @Injectable()
 export class RuntimeControlService {
@@ -533,21 +538,30 @@ export class RuntimeControlService {
       mountInputs: volumes.mountInputs,
       resources,
       public: input.public === true,
-      autoStopMinutes: input.autoStopMinutes ?? null,
+      // Native Microsandbox idle timeout is intentionally disabled for launch.
+      // Jovita still sends busy/activity signals, but lifecycle remains manual
+      // until platform-side stop/delete policy is wired end-to-end.
+      autoStopMinutes: null,
       ephemeral: input.ephemeral === true,
     };
   }
 
   private normalizeRegistryAuth(
-    input: RuntimeRegistryAuthDto | undefined,
+    input: RuntimeRegistryAuthLike | null | undefined,
   ): RuntimeRegistryAuthInput | null {
     if (!input) {
       return null;
     }
+    const server = String(input.server).trim();
+    const username = String(input.username).trim();
+    const password = String(input.password);
+    if (!server || !username || !password) {
+      return null;
+    }
     return {
-      server: input.server.trim(),
-      username: input.username.trim(),
-      password: input.password,
+      server,
+      username,
+      password,
     };
   }
 

@@ -39,7 +39,7 @@ export class AppConfigService {
   }
 
   get connectionTtlSeconds(): number {
-    return this.readInt('MICROSANDBOX_CLOUD_CONNECTION_TTL_SECONDS', 120);
+    return this.readInt('MICROSANDBOX_CLOUD_CONNECTION_TTL_SECONDS', 600);
   }
 
   get proxyBaseUrl(): string {
