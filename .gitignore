@@ -2,6 +2,7 @@ node_modules/
 dist/
 coverage/
 data/
+logs/
 .env
 .env.local
 .env.*.local
