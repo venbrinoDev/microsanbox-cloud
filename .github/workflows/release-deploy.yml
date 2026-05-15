@@ -1,0 +1,76 @@
+name: Microsandbox Cloud Release
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: microsandbox-cloud-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-package:
+    runs-on: ubuntu-latest
+    outputs:
+      release_version: ${{ steps.version.outputs.release_version }}
+      archive_name: ${{ steps.version.outputs.archive_name }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm test -- --runInBand
+
+      - name: Build
+        run: npm run build
+
+      - name: Determine release version
+        id: version
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            release_version="${GITHUB_REF_NAME}"
+          else
+            release_version="main-${GITHUB_SHA::7}"
+          fi
+          archive_name="microsandbox-cloud-${release_version}.tar.gz"
+          echo "release_version=${release_version}" >> "$GITHUB_OUTPUT"
+          echo "archive_name=${archive_name}" >> "$GITHUB_OUTPUT"
+
+      - name: Package release tarball
+        run: npm run package:release -- "${{ steps.version.outputs.release_version }}"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: microsandbox-cloud-${{ steps.version.outputs.release_version }}
+          path: |
+            artifacts/${{ steps.version.outputs.archive_name }}
+            artifacts/${{ steps.version.outputs.archive_name }}.sha256
+
+      - name: Publish GitHub release assets
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/${{ steps.version.outputs.archive_name }}
+            artifacts/${{ steps.version.outputs.archive_name }}.sha256

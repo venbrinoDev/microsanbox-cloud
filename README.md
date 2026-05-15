@@ -165,3 +165,43 @@ npm test -- --runInBand
 npm run build
 npm run start:dev
 ```
+
+## Release
+
+`microsandbox-cloud` is released independently from Jovita.
+
+- `main` pushes run CI and package a release tarball as a workflow artifact.
+- `v*` tags run the same build and publish GitHub release assets.
+
+Create a release bundle locally with:
+
+```bash
+npm run build
+npm run package:release -- v0.1.0
+```
+
+That produces:
+
+- `artifacts/microsandbox-cloud-v0.1.0.tar.gz`
+- `artifacts/microsandbox-cloud-v0.1.0.tar.gz.sha256`
+
+The release tarball contains:
+
+- `dist/`
+- runtime `package.json` and `package-lock.json`
+- `README.md`
+- `LICENSE`
+
+### GitHub Actions
+
+The repository ships with two workflows:
+
+- `.github/workflows/ci.yml`
+  - runs lint, tests, and build on pull requests and pushes to `main`
+- `.github/workflows/release-deploy.yml`
+  - runs on pushes to `main`
+  - runs on tags matching `v*`
+  - uploads release tarballs as workflow artifacts
+  - publishes GitHub release assets for tags
+
+Host-specific deployment is intentionally left to the consumer. Jovita or any other user can fetch the tagged tarball and install it however they want.
