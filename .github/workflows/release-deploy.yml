@@ -2,8 +2,6 @@ name: Microsandbox Cloud Release
 
 on:
   push:
-    branches:
-      - master
     tags:
       - 'v*'
 
@@ -47,11 +45,7 @@ jobs:
         id: version
         run: |
           set -euo pipefail
-          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            release_version="${GITHUB_REF_NAME}"
-          else
-            release_version="main-${GITHUB_SHA::7}"
-          fi
+          release_version="${GITHUB_REF_NAME}"
           archive_name="microsandbox-cloud-${release_version}.tar.gz"
           echo "release_version=${release_version}" >> "$GITHUB_OUTPUT"
           echo "archive_name=${archive_name}" >> "$GITHUB_OUTPUT"
@@ -68,7 +62,6 @@ jobs:
             artifacts/${{ steps.version.outputs.archive_name }}.sha256
 
       - name: Publish GitHub release assets
-        if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@v2
         with:
           files: |

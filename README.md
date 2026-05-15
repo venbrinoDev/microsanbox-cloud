@@ -170,8 +170,8 @@ npm run start:dev
 
 `microsandbox-cloud` is released independently from Jovita.
 
-- `main` pushes run CI and package a release tarball as a workflow artifact.
-- `v*` tags run the same build and publish GitHub release assets.
+- pushes to `master` run CI only.
+- `v*` tags run the release build and publish GitHub release assets.
 
 Create a release bundle locally with:
 
@@ -199,9 +199,7 @@ The repository ships with two workflows:
 - `.github/workflows/ci.yml`
   - runs lint, tests, and build on pull requests and pushes to `main`
 - `.github/workflows/release-deploy.yml`
-  - runs on pushes to `main`
   - runs on tags matching `v*`
-  - uploads release tarballs as workflow artifacts
   - publishes GitHub release assets for tags
 
 Host-specific deployment is intentionally left to the consumer. Jovita or any other user can fetch the tagged tarball and install it however they want.
