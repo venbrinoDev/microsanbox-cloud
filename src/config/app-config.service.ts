@@ -111,6 +111,18 @@ export class AppConfigService {
     return this.readInt('MICROSANDBOX_CLOUD_DEFAULT_DISK_GIB', 6);
   }
 
+  get env(): string {
+    return process.env.MICROSANDBOX_ENV?.trim() || 'development';
+  }
+
+  get isDev(): boolean {
+    return this.env === 'development';
+  }
+
+  get isProd(): boolean {
+    return this.env === 'production';
+  }
+
   get defaultImage(): string {
     return (
       process.env.MICROSANDBOX_CLOUD_DEFAULT_IMAGE?.trim() ||

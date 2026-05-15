@@ -26,8 +26,17 @@ type RegistryMock = Pick<
   | 'setRuntimeStatus'
   | 'updateRuntime'
   | 'volumeBackendName'
-  | 'volumePath'
 >;
+
+type LoggerMock = {
+  log: jest.MockedFunction<(message: unknown, ...params: unknown[]) => void>;
+  warn: jest.MockedFunction<(message: unknown, ...params: unknown[]) => void>;
+  error: jest.MockedFunction<(message: unknown, ...params: unknown[]) => void>;
+  debug: jest.MockedFunction<(message: unknown, ...params: unknown[]) => void>;
+  verbose: jest.MockedFunction<
+    (message: unknown, ...params: unknown[]) => void
+  >;
+};
 
 type MicrosandboxMock = Pick<
   MicrosandboxAdapter,
@@ -37,6 +46,8 @@ type MicrosandboxMock = Pick<
   | 'isHealthy'
   | 'readFiles'
   | 'remove'
+  | 'removeVolume'
+  | 'ensureVolume'
   | 'start'
   | 'stop'
   | 'writeFiles'
@@ -178,10 +189,6 @@ function createRegistryMock(runtime: RuntimeEntity | null): RegistryMock {
   const volumeBackendNameMock: jest.MockedFunction<
     RuntimeRegistryService['volumeBackendName']
   > = jest.fn((volumeId: string) => `runtime-data-${volumeId}`);
-  const volumePathMock: jest.MockedFunction<
-    RuntimeRegistryService['volumePath']
-  > = jest.fn(() => Promise.resolve('/tmp/volume'));
-
   return {
     createSandboxId: createSandboxIdMock,
     deleteRuntime: deleteRuntimeMock,
@@ -201,7 +208,6 @@ function createRegistryMock(runtime: RuntimeEntity | null): RegistryMock {
     setRuntimeStatus: setRuntimeStatusMock,
     updateRuntime: updateRuntimeMock,
     volumeBackendName: volumeBackendNameMock,
-    volumePath: volumePathMock,
   };
 }
 
@@ -245,9 +251,23 @@ function createMicrosandboxMock(): MicrosandboxMock {
       void name;
       return Promise.resolve();
     });
+  const removeVolumeMock: jest.MockedFunction<
+    MicrosandboxAdapter['removeVolume']
+  > = jest.fn((name: string) => {
+    void name;
+    return Promise.resolve();
+  });
+  const ensureVolumeMock: jest.MockedFunction<
+    MicrosandboxAdapter['ensureVolume']
+  > = jest.fn((name: string) => {
+    void name;
+    return Promise.resolve();
+  });
   const startMock: jest.MockedFunction<MicrosandboxAdapter['start']> = jest.fn(
-    (name: string) => {
+    (name: string, command?: string[] | null, workingDir?: string | null) => {
       void name;
+      void command;
+      void workingDir;
       return Promise.resolve();
     },
   );
@@ -271,9 +291,21 @@ function createMicrosandboxMock(): MicrosandboxMock {
     isHealthy: isHealthyMock,
     readFiles: readFilesMock,
     remove: removeMock,
+    removeVolume: removeVolumeMock,
+    ensureVolume: ensureVolumeMock,
     start: startMock,
     stop: stopMock,
     writeFiles: writeFilesMock,
+  };
+}
+
+function createLoggerMock(): LoggerMock {
+  return {
+    log: jest.fn(),
+    warn: jest.fn(),
+    error: jest.fn(),
+    debug: jest.fn(),
+    verbose: jest.fn(),
   };
 }
 
@@ -286,6 +318,7 @@ describe('RuntimeControlService', () => {
     const service = new RuntimeControlService(
       new AppConfigService(),
       registry as RuntimeRegistryService,
+      createLoggerMock(),
       microsandbox,
     );
 
@@ -312,6 +345,7 @@ describe('RuntimeControlService', () => {
     const service = new RuntimeControlService(
       new AppConfigService(),
       registry as RuntimeRegistryService,
+      createLoggerMock(),
       createMicrosandboxMock(),
     );
 
@@ -329,6 +363,7 @@ describe('RuntimeControlService', () => {
     const service = new RuntimeControlService(
       new AppConfigService(),
       registry as RuntimeRegistryService,
+      createLoggerMock(),
       microsandbox,
     );
 
@@ -338,6 +373,67 @@ describe('RuntimeControlService', () => {
       'runtime-runtime-1',
       ['nginx', '-g', 'daemon off;'],
       '/workspace',
+    );
+    expect(result).toEqual({
+      runtimeId: 'runtime-1',
+      sandboxId: 'runtime-1',
+      status: 'running',
+    });
+  });
+
+  it('updates an existing sandbox using existing values for omitted fields', async () => {
+    const runtime = runtimeFixture();
+    runtime.image = 'image:1';
+    runtime.command = ['nginx', '-g', 'daemon off;'];
+    runtime.environment = { NODE_ENV: 'production' };
+    runtime.mounts = [
+      {
+        volumeId: 'volume-1',
+        volumeName: 'volume-1',
+        mountPath: '/workspace',
+        readOnly: false,
+      },
+    ];
+    const registry = createRegistryMock(runtime);
+    registry.findVolumeByIdOrName = jest.fn((volumeIdOrName: string) => {
+      if (volumeIdOrName === 'volume-1') {
+        return Promise.resolve({
+          id: 'volume-1',
+          name: 'volume-1',
+          backendName: 'runtime-data-volume-1',
+          quotaMiB: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        });
+      }
+      return Promise.resolve(null);
+    });
+    const microsandbox = createMicrosandboxMock();
+    const service = new RuntimeControlService(
+      new AppConfigService(),
+      registry as RuntimeRegistryService,
+      createLoggerMock(),
+      microsandbox,
+    );
+
+    const result = await service.update('runtime-1', {
+      image: 'image:2',
+    });
+
+    expect(microsandbox.createDetachedRuntime).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sandboxName: 'runtime-runtime-1',
+        image: 'image:2',
+        command: ['nginx', '-g', 'daemon off;'],
+        env: { NODE_ENV: 'production' },
+        mounts: [
+          {
+            volumeName: 'runtime-data-volume-1',
+            mountPath: '/workspace',
+            readOnly: false,
+          },
+        ],
+      }),
     );
     expect(result).toEqual({
       runtimeId: 'runtime-1',

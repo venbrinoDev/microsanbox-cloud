@@ -1,8 +1,11 @@
 import { Injectable, ServiceUnavailableException } from '@nestjs/common';
+import { WinstonLoggerService } from '../logger/winston-logger.service.js';
 import {
   MiB,
   Sandbox,
   Image,
+  Volume,
+  VolumeBuilder,
   isInstalled,
   type Sandbox as MicrosandboxRuntime,
   type SandboxHandle,
@@ -62,6 +65,7 @@ type BoundVolumeHandleLike = {
 
 type VolumeBinderLike = {
   bind(host: string): BoundVolumeHandleLike;
+  named(name: string): BoundVolumeHandleLike;
 };
 
 type SandboxBuilderLike = {
@@ -91,7 +95,10 @@ type SandboxBuilderLike = {
 
 @Injectable()
 export class MicrosandboxAdapterService implements MicrosandboxAdapter {
-  constructor(private readonly config: AppConfigService) {}
+  constructor(
+    private readonly config: AppConfigService,
+    private readonly logger: WinstonLoggerService,
+  ) {}
 
   async listCachedImages(): Promise<
     Array<{
@@ -171,6 +178,31 @@ export class MicrosandboxAdapterService implements MicrosandboxAdapter {
     }
   }
 
+  async ensureVolume(name: string, quotaMiB?: number | null): Promise<void> {
+    try {
+      await Volume.get(name);
+      return;
+    } catch {
+      const builder = new VolumeBuilder(name);
+      if (
+        typeof quotaMiB === 'number' &&
+        Number.isFinite(quotaMiB) &&
+        quotaMiB > 0
+      ) {
+        builder.quota(Math.trunc(quotaMiB));
+      }
+      await builder.create();
+    }
+  }
+
+  async removeVolume(name: string): Promise<void> {
+    try {
+      await Volume.remove(name);
+    } catch {
+      // Ignore missing or already-removed volumes.
+    }
+  }
+
   async getSandboxHandle(name: string): Promise<SandboxHandle | null> {
     try {
       return await Sandbox.get(name);
@@ -180,6 +212,9 @@ export class MicrosandboxAdapterService implements MicrosandboxAdapter {
   }
 
   async createDetachedRuntime(input: CreateRuntimeInput): Promise<void> {
+    this.logger.log(
+      `Creating detached runtime: sandboxName=${input.sandboxName}, image=${input.image}`,
+    );
     const builder = Sandbox.builder(
       input.sandboxName,
     ) as unknown as SandboxBuilderLike;
@@ -231,7 +266,7 @@ export class MicrosandboxAdapterService implements MicrosandboxAdapter {
       configuredBuilder.volume(
         mount.mountPath,
         (builderInstance: VolumeBinderLike) => {
-          const base = builderInstance.bind(mount.hostPath);
+          const base = builderInstance.named(mount.volumeName);
           return mount.readOnly ? base.readonly() : base;
         },
       );
@@ -377,6 +412,7 @@ export class MicrosandboxAdapterService implements MicrosandboxAdapter {
   }
 
   async remove(name: string): Promise<void> {
+    this.logger.log(`Removing sandbox: sandboxName=${name}`);
     const handle = await this.getSandboxHandle(name);
     if (handle) {
       try {
@@ -385,7 +421,11 @@ export class MicrosandboxAdapterService implements MicrosandboxAdapter {
         // The sandbox may already be stopped or unavailable; removal below is still attempted.
       }
       await this.waitForSandboxStop(name);
-      await handle.remove();
+      try {
+        await handle.remove();
+      } catch {
+        await this.runMicrosandboxCli(['remove', '--force', name]);
+      }
     }
   }
 
@@ -478,7 +518,7 @@ export class MicrosandboxAdapterService implements MicrosandboxAdapter {
     const deadline = Date.now() + this.config.runtimeReadyTimeoutMs;
     do {
       const status = await this.getStatus(name);
-      if (!status || status === 'stopped' || status === 'draining') {
+      if (!status || status === 'stopped') {
         return;
       }
       if (Date.now() >= deadline) {

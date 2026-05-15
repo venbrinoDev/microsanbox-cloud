@@ -35,7 +35,7 @@ export interface CreateRuntimeInput {
     protocol: 'tcp' | 'udp';
   }>;
   mounts: Array<{
-    hostPath: string;
+    volumeName: string;
     mountPath: string;
     readOnly?: boolean;
   }>;
@@ -68,6 +68,8 @@ export interface MicrosandboxAdapter {
     layerCount: number;
     cached: boolean;
   }>;
+  ensureVolume(name: string, quotaMiB?: number | null): Promise<void>;
+  removeVolume(name: string): Promise<void>;
   createDetachedRuntime(input: CreateRuntimeInput): Promise<void>;
   start(
     name: string,

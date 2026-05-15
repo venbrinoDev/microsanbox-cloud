@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { WinstonLoggerService } from '../logger/winston-logger.service.js';
 import httpProxy from 'http-proxy';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Socket } from 'node:net';
@@ -29,7 +30,10 @@ export class ProxyService {
     xfwd: true,
   });
 
-  constructor(private readonly runtimeControl: RuntimeControlService) {
+  constructor(
+    private readonly runtimeControl: RuntimeControlService,
+    private readonly logger: WinstonLoggerService,
+  ) {
     this.proxy.on('error', (_error, _req, res) => {
       if (this.isServerResponse(res)) {
         if (!res.headersSent) {
@@ -76,6 +80,9 @@ export class ProxyService {
           );
 
     req.url = match.path;
+    this.logger.log(
+      `Proxy HTTP: kind=${match.kind}, sandboxId=${target.runtime.sandboxId}, port=${match.port}, path=${match.path}`,
+    );
     this.proxy.web(req, res, {
       target: `http://127.0.0.1:${target.hostPort}`,
     });
@@ -108,6 +115,9 @@ export class ProxyService {
           );
 
     req.url = match.path;
+    this.logger.log(
+      `Proxy WS: kind=${match.kind}, sandboxId=${target.runtime.sandboxId}, port=${match.port}`,
+    );
     this.proxy.ws(req, socket, head, {
       target: `http://127.0.0.1:${target.hostPort}`,
     });

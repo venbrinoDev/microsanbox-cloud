@@ -8,6 +8,7 @@ import {
 } from '@nestjs/common';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { AppConfigService } from '../config/app-config.service.js';
+import { WinstonLoggerService } from '../logger/winston-logger.service.js';
 import {
   RuntimeEntity,
   type RuntimePortBindingRecord,
@@ -30,6 +31,7 @@ import {
   type RuntimeResourcesDto,
   type RuntimeSecretDto,
   type RuntimeVolumeMountDto,
+  UpdateSandboxDto,
 } from './dto/ensure-runtime.dto.js';
 
 type RuntimeSpec = {
@@ -62,6 +64,7 @@ export class RuntimeControlService {
   constructor(
     private readonly config: AppConfigService,
     private readonly registry: RuntimeRegistryService,
+    private readonly logger: WinstonLoggerService,
     @Inject(MICROSANDBOX_ADAPTER)
     private readonly microsandbox: MicrosandboxAdapter,
   ) {}
@@ -75,6 +78,9 @@ export class RuntimeControlService {
       }
     }
     const sandboxId = this.registry.createSandboxId(name);
+    this.logger.log(
+      `Creating sandbox: sandboxId=${sandboxId}, image=${input.image || this.config.defaultImage}`,
+    );
     return this.provision({
       ...input,
       sandboxId,
@@ -88,6 +94,17 @@ export class RuntimeControlService {
       input.sandboxId ?? input.name ?? undefined,
     );
     return this.provision({ ...input, sandboxId });
+  }
+
+  async update(
+    sandboxId: string,
+    input: UpdateSandboxDto,
+  ): Promise<RuntimeSummary> {
+    const runtime = await this.registry.findRuntimeBySandboxId(sandboxId);
+    if (!runtime) {
+      throw new NotFoundException(`Sandbox not found: ${sandboxId}`);
+    }
+    return this.provision(this.buildUpdateInput(runtime, input));
   }
 
   async list(): Promise<RuntimeSummary> {
@@ -106,6 +123,9 @@ export class RuntimeControlService {
 
   async start(sandboxIdOrName: string): Promise<RuntimeSummary> {
     let runtime = await this.requireRuntime(sandboxIdOrName);
+    this.logger.log(
+      `Starting sandbox: sandboxId=${runtime.sandboxId}, sandboxName=${runtime.sandboxName}`,
+    );
     await this.microsandbox.start(
       runtime.sandboxName,
       runtime.command,
@@ -121,6 +141,9 @@ export class RuntimeControlService {
 
   async stop(sandboxIdOrName: string): Promise<RuntimeSummary> {
     let runtime = await this.requireRuntime(sandboxIdOrName);
+    this.logger.log(
+      `Stopping sandbox: sandboxId=${runtime.sandboxId}, sandboxName=${runtime.sandboxName}`,
+    );
     await this.microsandbox.stop(runtime.sandboxName);
     runtime = await this.registry.setRuntimeStatus(
       runtime,
@@ -132,6 +155,9 @@ export class RuntimeControlService {
 
   async delete(sandboxIdOrName: string): Promise<RuntimeSummary> {
     const runtime = await this.requireRuntime(sandboxIdOrName);
+    this.logger.log(
+      `Deleting sandbox: sandboxId=${runtime.sandboxId}, sandboxName=${runtime.sandboxName}`,
+    );
     await this.registry.setRuntimeStatus(
       runtime,
       'deleting',
@@ -162,7 +188,12 @@ export class RuntimeControlService {
       ),
       quotaMiB: input.quotaMiB ?? null,
     });
-    await this.registry.volumePath(volume);
+    try {
+      await this.microsandbox.ensureVolume(volume.backendName, volume.quotaMiB);
+    } catch (error) {
+      await this.registry.deleteVolume(volume).catch(() => undefined);
+      throw error;
+    }
     return this.volumeSummary(volume);
   }
 
@@ -194,6 +225,7 @@ export class RuntimeControlService {
 
   async deleteVolume(volumeIdOrName: string): Promise<RuntimeSummary> {
     const volume = await this.requireVolume(volumeIdOrName);
+    await this.microsandbox.removeVolume(volume.backendName);
     await this.registry.deleteVolume(volume);
     return { volumeId: volume.id, deleted: true };
   }
@@ -284,6 +316,9 @@ export class RuntimeControlService {
     args: string[] = [],
   ): Promise<RuntimeSummary> {
     const runtime = await this.requireRunningRuntime(sandboxIdOrName);
+    this.logger.log(
+      `Exec in sandbox: sandboxId=${runtime.sandboxId}, command=${command}${args.length ? ` args=[${args.join(',')}]` : ''}`,
+    );
     const result = await this.microsandbox.exec(
       runtime.sandboxName,
       command,
@@ -359,19 +394,12 @@ export class RuntimeControlService {
     let runtime = await this.registry.findRuntimeBySandboxId(input.sandboxId!);
     const spec = await this.buildSpec(input);
     const initialPrimaryPort = this.firstPortBinding(spec.ports);
-
-    if (
-      runtime &&
+    const shouldReplace =
+      runtime !== null &&
       (input.forceRecreate === true ||
-        this.requiresRecreate(runtime, spec, name))
-    ) {
-      await this.microsandbox.remove(runtime.sandboxName);
-      await this.registry.releasePorts(runtime.id);
-      await this.registry.deleteRuntime(runtime);
-      runtime = null;
-    }
+        this.requiresRecreate(runtime, spec, name));
 
-    if (runtime) {
+    if (runtime && !shouldReplace) {
       const currentRuntime = runtime;
       const currentStatus = await this.microsandbox.getStatus(
         currentRuntime.sandboxName,
@@ -404,6 +432,28 @@ export class RuntimeControlService {
         });
         return this.registry.runtimeStatusSummary(runtime);
       }
+    }
+
+    if (runtime && shouldReplace) {
+      runtime = await this.registry.updateRuntime(runtime, {
+        name,
+        status: 'provisioning',
+        statusReason:
+          input.forceRecreate === true
+            ? 'replacing_forced'
+            : 'replacing_spec_changed',
+        image: spec.image,
+        command: spec.command,
+        environment: spec.env,
+        secrets: spec.secrets,
+        workingDir: spec.workingDir,
+        mounts: spec.mounts,
+        cpu: spec.resources.cpu,
+        memoryMiB: spec.resources.memoryMiB,
+        diskGiB: spec.resources.diskGiB,
+        autoStopMinutes: spec.autoStopMinutes,
+        ephemeral: spec.ephemeral,
+      });
     }
 
     if (!runtime) {
@@ -486,6 +536,15 @@ export class RuntimeControlService {
     const updatedPrimaryPort = this.firstPortBinding(spec.ports);
     const primaryHostPort = updatedPrimaryPort.hostPort;
     const healthy = await this.waitForHealthy(primaryHostPort);
+    if (healthy) {
+      this.logger.log(
+        `Sandbox healthy: sandboxId=${runtime.sandboxId}, hostPort=${primaryHostPort}`,
+      );
+    } else {
+      this.logger.warn(
+        `Sandbox unhealthy: sandboxId=${runtime.sandboxId}, hostPort=${primaryHostPort}`,
+      );
+    }
     runtime = await this.registry.updateRuntime(runtime, {
       name,
       portBindings: spec.ports,
@@ -546,6 +605,62 @@ export class RuntimeControlService {
     };
   }
 
+  private buildUpdateInput(
+    runtime: RuntimeEntity,
+    input: UpdateSandboxDto,
+  ): EnsureRuntimeDto {
+    return {
+      sandboxId: runtime.sandboxId,
+      name: input.name ?? runtime.name ?? undefined,
+      image: input.image ?? runtime.image,
+      command: input.command ?? runtime.command ?? undefined,
+      env: input.env ?? runtime.environment ?? {},
+      files: input.files ?? [],
+      secrets:
+        input.secrets ??
+        (runtime.secrets ?? []).map((secret) => ({
+          env: secret.env,
+          value: secret.value,
+          placeholder: secret.placeholder,
+          allowedHosts: [...(secret.allowedHosts ?? [])],
+          allowedHostPatterns: [...(secret.allowedHostPatterns ?? [])],
+          allowAnyHostDangerous: secret.allowAnyHostDangerous,
+          requireTlsIdentity: secret.requireTlsIdentity,
+          injectHeaders: secret.injectHeaders,
+          injectBasicAuth: secret.injectBasicAuth,
+          injectQuery: secret.injectQuery,
+          injectBody: secret.injectBody,
+        })),
+      workingDir: input.workingDir ?? runtime.workingDir ?? undefined,
+      ports:
+        input.ports ??
+        (runtime.portBindings ?? []).map((binding) => ({
+          name: binding.name,
+          containerPort: binding.containerPort,
+          protocol: binding.protocol,
+        })),
+      resources: {
+        cpu: input.resources?.cpu ?? runtime.cpu,
+        memoryMiB: input.resources?.memoryMiB ?? runtime.memoryMiB,
+        diskGiB: input.resources?.diskGiB ?? runtime.diskGiB,
+      },
+      volumes:
+        input.volumes ??
+        (runtime.mounts ?? []).map((mount) => ({
+          volumeId: mount.volumeId,
+          mountPath: mount.mountPath,
+          readOnly: mount.readOnly,
+        })),
+      registryAuth: input.registryAuth,
+      public: input.public ?? runtime.public,
+      autoStopMinutes:
+        input.autoStopMinutes ?? runtime.autoStopMinutes ?? undefined,
+      ephemeral: input.ephemeral ?? runtime.ephemeral,
+      forceRecreate: input.forceRecreate,
+      refreshActivity: input.refreshActivity,
+    };
+  }
+
   private normalizeRegistryAuth(
     input: RuntimeRegistryAuthLike | null | undefined,
   ): RuntimeRegistryAuthInput | null {
@@ -573,19 +688,20 @@ export class RuntimeControlService {
     const mountInputs: CreateRuntimeInput['mounts'] = [];
     for (const volumeMount of volumes) {
       const volume = await this.requireVolume(volumeMount.volumeId);
-      const hostPath = await this.registry.volumePath(
-        volume,
-        volumeMount.subpath ?? null,
-      );
+      const subpath = volumeMount.subpath?.trim();
+      if (subpath) {
+        throw new BadRequestException(
+          'Volume subpath mounts are not supported with native Microsandbox named volumes. Mount the whole volume and manage subdirectories inside the guest path.',
+        );
+      }
       mountRecords.push({
         volumeId: volume.id,
         volumeName: volume.name,
         mountPath: volumeMount.mountPath,
-        subpath: volumeMount.subpath?.trim() || undefined,
         readOnly: volumeMount.readOnly === true,
       });
       mountInputs.push({
-        hostPath,
+        volumeName: volume.backendName,
         mountPath: volumeMount.mountPath,
         readOnly: volumeMount.readOnly === true,
       });

@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { WinstonLoggerService } from './logger/winston-logger.service.js';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { RuntimeHostEntity } from './database/runtime-host.entity.js';
@@ -56,6 +57,7 @@ import { InternalAuthGuard } from './shared/internal-auth.guard.js';
     RuntimeIdentityService,
     ProxyService,
     InternalAuthGuard,
+    WinstonLoggerService,
   ],
 })
 export class AppModule {}

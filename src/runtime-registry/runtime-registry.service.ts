@@ -1,7 +1,5 @@
 import { Injectable, OnModuleInit } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { mkdir, rm } from 'node:fs/promises';
-import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { Repository } from 'typeorm';
 import { AppConfigService } from '../config/app-config.service.js';
@@ -37,7 +35,6 @@ export class RuntimeRegistryService implements OnModuleInit {
   ) {}
 
   async onModuleInit(): Promise<void> {
-    await mkdir(this.config.managedVolumeRoot, { recursive: true });
     await this.ensureLocalHost();
   }
 
@@ -227,22 +224,8 @@ export class RuntimeRegistryService implements OnModuleInit {
     return this.volumeRepo.save(this.volumeRepo.create(input));
   }
 
-  async volumePath(
-    volume: VolumeEntity,
-    subpath?: string | null,
-  ): Promise<string> {
-    const root = join(this.config.managedVolumeRoot, volume.backendName);
-    const target = subpath?.trim() ? join(root, subpath.trim()) : root;
-    await mkdir(target, { recursive: true });
-    return target;
-  }
-
   async deleteVolume(volume: VolumeEntity): Promise<void> {
     await this.volumeRepo.delete({ id: volume.id });
-    await rm(join(this.config.managedVolumeRoot, volume.backendName), {
-      recursive: true,
-      force: true,
-    });
   }
 
   async createSignedPreviewToken(
