@@ -198,7 +198,7 @@ The repository ships with two workflows:
 
 - `.github/workflows/ci.yml`
   - runs lint, tests, and build on pull requests and pushes to `main`
-- `.github/workflows/release-deploy.yml`
+- `.github/workflows/release.yml`
   - runs on tags matching `v*`
   - publishes GitHub release assets for tags
 
