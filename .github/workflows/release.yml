@@ -67,3 +67,4 @@ jobs:
           files: |
             artifacts/${{ steps.version.outputs.archive_name }}
             artifacts/${{ steps.version.outputs.archive_name }}.sha256
+          generate_release_notes: true
