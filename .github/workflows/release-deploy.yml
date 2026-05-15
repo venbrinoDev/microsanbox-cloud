@@ -3,7 +3,7 @@ name: Microsandbox Cloud Release
 on:
   push:
     branches:
-      - main
+      - master
     tags:
       - 'v*'
 
