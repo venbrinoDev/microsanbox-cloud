@@ -34,7 +34,12 @@ export class ProxyService {
     private readonly runtimeControl: RuntimeControlService,
     private readonly logger: WinstonLoggerService,
   ) {
-    this.proxy.on('error', (_error, _req, res) => {
+    this.proxy.on('error', (error, req, res) => {
+      const url =
+        req && typeof req === 'object' && 'url' in req ? String(req.url ?? '') : '';
+      this.logger.error(
+        `Upstream proxy error: url=${url || '<unknown>'} message=${error instanceof Error ? error.message : String(error)}`,
+      );
       if (this.isServerResponse(res)) {
         if (!res.headersSent) {
           res.writeHead(502, { 'Content-Type': 'application/json' });
@@ -62,11 +67,16 @@ export class ProxyService {
   ): Promise<void> {
     const match = this.extract(req.url ?? '', req.headers);
     if (!match) {
+      this.logger.warn(`Proxy HTTP rejected: unmatched url=${req.url ?? ''}`);
       res.statusCode = 404;
       res.end('Not found');
       return;
     }
 
+    const requestTag = this.requestTag();
+    this.logger.log(
+      `Proxy HTTP request: requestId=${requestTag}, ${this.describeMatch(match)}`,
+    );
     const target =
       match.kind === 'signed'
         ? await this.runtimeControl.validateProxyAccessBySignedToken(
@@ -81,7 +91,7 @@ export class ProxyService {
 
     req.url = match.path;
     this.logger.log(
-      `Proxy HTTP: kind=${match.kind}, sandboxId=${target.runtime.sandboxId}, port=${match.port}, path=${match.path}`,
+      `Proxy HTTP target: requestId=${requestTag}, kind=${match.kind}, sandboxId=${target.runtime.sandboxId}, sandboxName=${target.runtime.sandboxName}, runtimeId=${target.runtime.id}, status=${target.runtime.status}, hostPort=${target.hostPort}, port=${match.port}, path=${match.path}`,
     );
     this.proxy.web(req, res, {
       target: `http://127.0.0.1:${target.hostPort}`,
@@ -98,10 +108,15 @@ export class ProxyService {
   ): Promise<void> {
     const match = this.extract(req.url ?? '', req.headers);
     if (!match) {
+      this.logger.warn(`Proxy WS rejected: unmatched url=${req.url ?? ''}`);
       socket.destroy();
       return;
     }
 
+    const requestTag = this.requestTag();
+    this.logger.log(
+      `Proxy WS request: requestId=${requestTag}, ${this.describeMatch(match)}`,
+    );
     const target =
       match.kind === 'signed'
         ? await this.runtimeControl.validateProxyAccessBySignedToken(
@@ -116,7 +131,7 @@ export class ProxyService {
 
     req.url = match.path;
     this.logger.log(
-      `Proxy WS: kind=${match.kind}, sandboxId=${target.runtime.sandboxId}, port=${match.port}`,
+      `Proxy WS target: requestId=${requestTag}, kind=${match.kind}, sandboxId=${target.runtime.sandboxId}, sandboxName=${target.runtime.sandboxName}, runtimeId=${target.runtime.id}, status=${target.runtime.status}, hostPort=${target.hostPort}, port=${match.port}, path=${match.path}`,
     );
     this.proxy.ws(req, socket, head, {
       target: `http://127.0.0.1:${target.hostPort}`,
@@ -191,4 +206,26 @@ export class ProxyService {
       typeof value.destroy === 'function',
     );
   }
+
+  private describeMatch(match: StandardProxyMatch | SignedProxyMatch): string {
+    if (match.kind === 'signed') {
+      return `kind=signed, token=${this.redactToken(match.token)}, port=${match.port}, path=${match.path}`;
+    }
+    return `kind=standard, sandboxId=${match.sandboxId}, token=${this.redactToken(match.token)}, port=${match.port}, path=${match.path}`;
+  }
+
+  private redactToken(token: string | null | undefined): string {
+    const normalized = String(token ?? '').trim();
+    if (!normalized) return '<missing>';
+    if (normalized.length <= 10) return normalized;
+    return `${normalized.slice(0, 6)}...${normalized.slice(-4)}`;
+  }
+
+  private requestTag(): string {
+    return randomId();
+  }
+}
+
+function randomId(): string {
+  return Math.random().toString(36).slice(2, 10);
 }

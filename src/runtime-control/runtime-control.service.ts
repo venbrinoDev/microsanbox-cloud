@@ -302,11 +302,17 @@ export class RuntimeControlService {
   ): Promise<RuntimeSummary> {
     const record = await this.registry.getSignedPreviewToken(token, port);
     if (!record || this.registry.hasSignedPreviewTokenExpired(record)) {
+      this.logger.warn(
+        `Signed proxy token lookup failed: token=${this.redactToken(token)}, requestedPort=${port}, found=${Boolean(record)}, expired=${record ? this.registry.hasSignedPreviewTokenExpired(record) : false}`,
+      );
       if (record) {
         await this.registry.expireSignedPreviewToken(token, port);
       }
       throw new NotFoundException('Signed preview token not found');
     }
+    this.logger.log(
+      `Signed proxy token lookup succeeded: token=${this.redactToken(token)}, sandboxId=${record.sandboxId}, requestedPort=${port}, expiresAt=${record.expiresAt.toISOString()}`,
+    );
     return { sandboxId: record.sandboxId, port };
   }
 
@@ -364,8 +370,14 @@ export class RuntimeControlService {
     token?: string | null,
   ): Promise<{ runtime: RuntimeEntity; hostPort: number }> {
     const runtime = await this.requireRuntime(sandboxId);
+    this.logger.log(
+      `Validating standard proxy access: sandboxId=${runtime.sandboxId}, runtimeId=${runtime.id}, status=${runtime.status}, public=${runtime.public}, requestedPort=${port}, token=${this.redactToken(token)}`,
+    );
     if (!runtime.public) {
       if (!token || !this.tokensEqual(runtime.authToken, token)) {
+        this.logger.warn(
+          `Standard proxy denied: sandboxId=${runtime.sandboxId}, runtimeId=${runtime.id}, requestedPort=${port}, reason=invalid_preview_token`,
+        );
         throw new UnauthorizedException('Missing or invalid preview token');
       }
     }
@@ -376,8 +388,14 @@ export class RuntimeControlService {
     token: string,
     port: number,
   ): Promise<{ runtime: RuntimeEntity; hostPort: number }> {
+    this.logger.log(
+      `Validating signed proxy access: token=${this.redactToken(token)}, requestedPort=${port}`,
+    );
     const resolved = await this.resolveSignedPreviewToken(token, port);
     const runtime = await this.requireRuntime(String(resolved.sandboxId));
+    this.logger.log(
+      `Signed proxy token resolved: token=${this.redactToken(token)}, sandboxId=${runtime.sandboxId}, runtimeId=${runtime.id}, status=${runtime.status}, requestedPort=${port}`,
+    );
     return this.resolveProxyTarget(runtime, port);
   }
 
@@ -777,8 +795,14 @@ export class RuntimeControlService {
     const runtime =
       await this.registry.findRuntimeBySandboxIdOrName(sandboxIdOrName);
     if (!runtime) {
+      this.logger.warn(
+        `Runtime lookup failed: sandboxIdOrName=${sandboxIdOrName}`,
+      );
       throw new NotFoundException(`Sandbox not found: ${sandboxIdOrName}`);
     }
+    this.logger.log(
+      `Runtime lookup succeeded: sandboxIdOrName=${sandboxIdOrName}, sandboxId=${runtime.sandboxId}, runtimeId=${runtime.id}, sandboxName=${runtime.sandboxName}, status=${runtime.status}, hostPort=${runtime.hostPort}, primaryPort=${runtime.primaryPort}`,
+    );
     return runtime;
   }
 
@@ -789,6 +813,9 @@ export class RuntimeControlService {
       await this.requireRuntime(sandboxIdOrName),
     );
     if (runtime.status !== 'running') {
+      this.logger.warn(
+        `Runtime not running: sandboxIdOrName=${sandboxIdOrName}, sandboxId=${runtime.sandboxId}, runtimeId=${runtime.id}, status=${runtime.status}, reason=${runtime.statusReason ?? '<none>'}`,
+      );
       throw new ConflictException(
         `Sandbox is not running: ${runtime.sandboxId}`,
       );
@@ -808,6 +835,9 @@ export class RuntimeControlService {
     const status = await this.microsandbox.getStatus(runtime.sandboxName);
     const normalized = this.normalizeStatus(status);
     if (normalized !== runtime.status) {
+      this.logger.warn(
+        `Runtime status drift detected: sandboxId=${runtime.sandboxId}, runtimeId=${runtime.id}, sandboxName=${runtime.sandboxName}, storedStatus=${runtime.status}, upstreamStatus=${normalized}`,
+      );
       return this.registry.updateRuntime(runtime, { status: normalized });
     }
     return runtime;
@@ -834,6 +864,9 @@ export class RuntimeControlService {
     port: number,
   ): { runtime: RuntimeEntity; hostPort: number } {
     const binding = this.findBinding(runtime, port);
+    this.logger.log(
+      `Proxy target resolved: sandboxId=${runtime.sandboxId}, runtimeId=${runtime.id}, sandboxName=${runtime.sandboxName}, status=${runtime.status}, containerPort=${port}, hostPort=${binding.hostPort}, protocol=${binding.protocol}`,
+    );
     return { runtime, hostPort: binding.hostPort };
   }
 
@@ -845,11 +878,21 @@ export class RuntimeControlService {
       (entry) => entry.containerPort === port,
     );
     if (!binding) {
+      this.logger.warn(
+        `Proxy port binding missing: sandboxId=${runtime.sandboxId}, runtimeId=${runtime.id}, requestedPort=${port}, bindings=${JSON.stringify(runtime.portBindings ?? [])}`,
+      );
       throw new NotFoundException(
         `Port ${port} is not exposed for sandbox ${runtime.sandboxId}`,
       );
     }
     return binding;
+  }
+
+  private redactToken(token: string | null | undefined): string {
+    const normalized = String(token ?? '').trim();
+    if (!normalized) return '<missing>';
+    if (normalized.length <= 10) return normalized;
+    return `${normalized.slice(0, 6)}...${normalized.slice(-4)}`;
   }
 
   private tokensEqual(actual: string, candidate: string): boolean {
