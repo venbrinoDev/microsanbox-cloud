@@ -1,0 +1,16 @@
+[Unit]
+Description=microsandbox SSH Gateway
+Documentation=https://github.com/venbrino/microsandbox-cloud
+After=network.target microsandbox-cloud-api.service
+Requires=microsandbox-cloud-api.service
+
+[Service]
+Type=simple
+ExecStart=/opt/microsandbox-cloud/data/ssh/ssh-gateway
+EnvironmentFile=/opt/microsandbox-cloud/deploy/ssh-gateway.env
+Restart=always
+RestartSec=5
+User=microsandbox
+
+[Install]
+WantedBy=multi-user.target

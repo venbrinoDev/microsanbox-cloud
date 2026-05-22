@@ -25,11 +25,6 @@ type validateResponse struct {
 	HostPort  int    `json:"hostPort"`
 }
 
-type apiError struct {
-	StatusCode int    `json:"statusCode"`
-	Message    string `json:"message"`
-}
-
 func main() {
 	port := envOrDefault("SSH_GATEWAY_PORT", "2222")
 	apiURL := envOrDefault("API_URL", "http://localhost:3210")

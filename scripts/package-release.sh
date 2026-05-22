@@ -19,6 +19,10 @@ mkdir -p "${TARGET_DIR}" "${ROOT_DIR}/${OUTDIR}"
 cp -R \
   "${ROOT_DIR}/apps/cloud-api/dist" \
   "${TARGET_DIR}/dist"
+mkdir -p "${TARGET_DIR}/data"
+cp -R \
+  "${ROOT_DIR}/data/ssh" \
+  "${TARGET_DIR}/data/"
 cp \
   "${ROOT_DIR}/apps/cloud-api/package.json" \
   "${ROOT_DIR}/apps/cloud-api/package-lock.json" \

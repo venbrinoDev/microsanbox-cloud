@@ -29,5 +29,13 @@ jobs:
       - name: Test
         run: npm test -- --runInBand
 
-      - name: Build
+      - name: Build TypeScript
         run: npm run build
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '^1.22'
+
+      - name: Build SSH binaries (inject-sshd + ssh-gateway)
+        run: npm run build:ssh
