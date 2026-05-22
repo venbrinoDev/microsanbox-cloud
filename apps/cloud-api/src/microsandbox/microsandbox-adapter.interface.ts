@@ -45,6 +45,12 @@ export interface CreateRuntimeInput {
   env: Record<string, string>;
   secrets: RuntimeSecretInput[];
   files: RuntimeFileDto[];
+  ssh?: {
+    enabled: boolean;
+    publicKeys: string[];
+    user: string;
+    containerPort: number;
+  };
 }
 
 export interface MicrosandboxAdapter {

@@ -8,6 +8,7 @@ import { RuntimeEntity } from './database/runtime.entity.js';
 import { PortLeaseEntity } from './database/port-lease.entity.js';
 import { SignedPreviewTokenEntity } from './database/signed-preview-token.entity.js';
 import { VolumeEntity } from './database/volume.entity.js';
+import { SshSessionEntity } from './ssh/entities/ssh-session.entity.js';
 import { AppConfigService } from './config/app-config.service.js';
 import { HealthController } from './health/health.controller.js';
 import { RuntimeRegistryService } from './runtime-registry/runtime-registry.service.js';
@@ -18,6 +19,7 @@ import { RuntimeControlService } from './runtime-control/runtime-control.service
 import { RuntimeIdentityService } from './runtime-control/runtime-identity.service.js';
 import { ProxyService } from './proxy/proxy.service.js';
 import { InternalAuthGuard } from './shared/internal-auth.guard.js';
+import { SshModule } from './ssh/ssh.module.js';
 
 @Module({
   imports: [
@@ -34,6 +36,7 @@ import { InternalAuthGuard } from './shared/internal-auth.guard.js';
             PortLeaseEntity,
             VolumeEntity,
             SignedPreviewTokenEntity,
+            SshSessionEntity,
           ],
           synchronize: true,
         };
@@ -45,7 +48,9 @@ import { InternalAuthGuard } from './shared/internal-auth.guard.js';
       PortLeaseEntity,
       VolumeEntity,
       SignedPreviewTokenEntity,
+      SshSessionEntity,
     ]),
+    SshModule,
   ],
   controllers: [HealthController, SandboxController],
   providers: [
