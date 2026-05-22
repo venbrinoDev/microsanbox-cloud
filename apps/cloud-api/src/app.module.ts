@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Global, Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { WinstonLoggerService } from './logger/winston-logger.service.js';
 import { mkdirSync } from 'node:fs';
@@ -21,6 +21,7 @@ import { ProxyService } from './proxy/proxy.service.js';
 import { InternalAuthGuard } from './shared/internal-auth.guard.js';
 import { SshModule } from './ssh/ssh.module.js';
 
+@Global()
 @Module({
   imports: [
     TypeOrmModule.forRootAsync({

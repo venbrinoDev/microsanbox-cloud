@@ -633,11 +633,21 @@ export class MicrosandboxAdapterService implements MicrosandboxAdapter {
     await fs.write('/usr/local/sbin/inject-sshd', binaryContent);
     await sandbox.exec('chmod', ['+x', '/usr/local/sbin/inject-sshd']);
 
+    const allKeys = [...ssh.publicKeys];
+    const gatewayKey = this.sshService.readGatewayPublicKey();
+    if (gatewayKey) {
+      allKeys.push(gatewayKey);
+    }
+
+    const authKeysContent = this.sshService.buildAuthorizedKeysContent(allKeys);
+
     await fs.mkdir(`${userHome}/.ssh`).catch(() => undefined);
-    await fs.write(
-      `${userHome}/.ssh/authorized_keys`,
-      this.sshService.buildAuthorizedKeysContent(ssh.publicKeys),
-    );
+    await fs.write(`${userHome}/.ssh/authorized_keys`, authKeysContent);
+
+    if (ssh.user !== 'root') {
+      await fs.mkdir('/root/.ssh').catch(() => undefined);
+      await fs.write('/root/.ssh/authorized_keys', authKeysContent);
+    }
 
     try {
       await sandbox.exec('ssh-keygen', [

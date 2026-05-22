@@ -51,4 +51,13 @@ export class SshService {
         .join('\n') + '\n'
     );
   }
+
+  readGatewayPublicKey(): string {
+    const path = join(this.binaryDir, 'gateway-key.pub');
+    if (!existsSync(path)) {
+      this.logger.warn(`Gateway public key not found at ${path}`);
+      return '';
+    }
+    return readFileSync(path, 'utf-8').trim();
+  }
 }
