@@ -8,7 +8,7 @@ import { RuntimeEntity } from './database/runtime.entity.js';
 import { PortLeaseEntity } from './database/port-lease.entity.js';
 import { SignedPreviewTokenEntity } from './database/signed-preview-token.entity.js';
 import { VolumeEntity } from './database/volume.entity.js';
-import { SshSessionEntity } from './ssh/entities/ssh-session.entity.js';
+import { RevokedSessionEntity } from './ssh/entities/revoked-session.entity.js';
 import { AppConfigService } from './config/app-config.service.js';
 import { HealthController } from './health/health.controller.js';
 import { RuntimeRegistryService } from './runtime-registry/runtime-registry.service.js';
@@ -37,7 +37,7 @@ import { SshModule } from './ssh/ssh.module.js';
             PortLeaseEntity,
             VolumeEntity,
             SignedPreviewTokenEntity,
-            SshSessionEntity,
+            RevokedSessionEntity,
           ],
           synchronize: true,
         };
@@ -49,7 +49,7 @@ import { SshModule } from './ssh/ssh.module.js';
       PortLeaseEntity,
       VolumeEntity,
       SignedPreviewTokenEntity,
-      SshSessionEntity,
+      RevokedSessionEntity,
     ]),
     SshModule,
   ],

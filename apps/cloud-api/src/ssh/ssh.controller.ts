@@ -56,13 +56,13 @@ export class SshController {
         `SSH is not enabled for sandbox ${body.sandboxId}`,
       );
     }
-
-    const { hostPort: _hostPort, ...session } =
-      await this.sessions.createSession(
-        body.sandboxId,
-        sshBinding.hostPort,
-      );
-    return session;
+    const session = this.sessions.createSession(
+      body.sandboxId,
+      sshBinding.hostPort,
+    );
+    const { hostPort, ...rest } = session;
+    void hostPort;
+    return rest;
   }
 
   @Delete('ssh-session/:token')
@@ -75,7 +75,9 @@ export class SshController {
   ): Promise<Record<string, unknown>> {
     const revoked = await this.sessions.revokeSession(token);
     if (!revoked) {
-      throw new BadRequestException('Session token not found');
+      throw new BadRequestException(
+        'Session token not found or already revoked',
+      );
     }
     return { token, revoked: true };
   }
