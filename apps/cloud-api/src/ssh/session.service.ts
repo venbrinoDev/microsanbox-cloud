@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { Repository } from 'typeorm';
 import { AppConfigService } from '../config/app-config.service.js';
 import { RevokedSessionEntity } from './entities/revoked-session.entity.js';
@@ -18,32 +18,41 @@ export type SshValidateResult = {
   hostPort: number;
 };
 
-interface TokenPayload {
-  s: string; // sandboxId
-  p: number; // hostPort
-  e: number; // exp (unix ms)
+interface SessionEntry {
+  sandboxId: string;
+  hostPort: number;
+  expiresAt: number;
 }
 
 @Injectable()
 export class SshSessionService {
+  private readonly sessions = new Map<string, SessionEntry>();
+
   constructor(
     @InjectRepository(RevokedSessionEntity)
     private readonly revokedRepo: Repository<RevokedSessionEntity>,
     private readonly config: AppConfigService,
   ) {}
 
-  createSession(sandboxId: string, hostPort: number): SshSessionResult {
-    const expiresAt = new Date(
-      Date.now() + this.config.connectionTtlSeconds * 1000,
-    );
+  createSession(
+    sandboxId: string,
+    hostPort: number,
+    expiryMinutes?: number,
+  ): SshSessionResult {
+    this.pruneExpired();
 
-    const payload: TokenPayload = {
-      s: sandboxId,
-      p: hostPort,
-      e: expiresAt.getTime(),
-    };
+    const expiryMs =
+      (expiryMinutes ?? this.config.connectionTtlSeconds / 60) * 60 * 1000;
+    const expiresAt = Date.now() + expiryMs;
 
-    const token = this.signPayload(payload);
+    const token = randomBytes(16).toString('base64url');
+    const key = this.hash(token);
+
+    this.sessions.set(key, {
+      sandboxId,
+      hostPort,
+      expiresAt,
+    });
 
     const host = new URL(this.config.proxyBaseUrl).hostname;
     const sshCommand = `ssh -p 2222 ${token}@${host}`;
@@ -52,116 +61,58 @@ export class SshSessionService {
       token,
       sandboxId,
       hostPort,
-      expiresAt: expiresAt.toISOString(),
+      expiresAt: new Date(expiresAt).toISOString(),
       sshCommand,
     };
   }
 
   async validateSession(token: string): Promise<SshValidateResult | null> {
-    const payload = this.verifyToken(token);
-    if (!payload) {
+    const key = this.hash(token);
+
+    if (await this.isRevoked(key)) {
       return null;
     }
 
-    if (await this.isRevoked(token)) {
+    const entry = this.sessions.get(key);
+    if (!entry) {
       return null;
     }
 
-    return { sandboxId: payload.s, hostPort: payload.p };
+    if (Date.now() > entry.expiresAt) {
+      this.sessions.delete(key);
+      return null;
+    }
+
+    return { sandboxId: entry.sandboxId, hostPort: entry.hostPort };
   }
 
   async revokeSession(token: string): Promise<boolean> {
-    const hash = this.hashToken(token);
+    const key = this.hash(token);
+    this.sessions.delete(key);
+
     try {
-      await this.revokedRepo.save({ tokenHash: hash });
+      await this.revokedRepo.save({ tokenHash: key });
       return true;
     } catch {
       return false;
     }
   }
 
-  async cleanExpiredRevoked(): Promise<number> {
-    const result = await this.revokedRepo.delete({});
-    return result.affected ?? 0;
-  }
-
-  private signPayload(payload: TokenPayload): string {
-    const key = this.signingKey();
-    const encoded = Buffer.from(JSON.stringify(payload)).toString('base64url');
-    const sig = createHmac('sha256', key).update(encoded).digest('base64url');
-    return `${encoded}.${sig}`;
-  }
-
-  private verifyToken(token: string): TokenPayload | null {
-    const parts = token.split('.');
-    if (parts.length !== 2) {
-      return null;
-    }
-
-    const [encoded, sig] = parts;
-    const key = this.signingKey();
-
-    const expected = createHmac('sha256', key)
-      .update(encoded)
-      .digest('base64url');
-
-    try {
-      if (!timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) {
-        return null;
+  private pruneExpired(): void {
+    const now = Date.now();
+    for (const [key, entry] of this.sessions) {
+      if (now > entry.expiresAt) {
+        this.sessions.delete(key);
       }
-    } catch {
-      return null;
     }
-
-    let payload: TokenPayload | null;
-    try {
-      const decoded = Buffer.from(encoded, 'base64url').toString('utf-8');
-      payload = this.parseTokenPayload(decoded);
-    } catch {
-      return null;
-    }
-
-    if (!payload) {
-      return null;
-    }
-
-    if (Date.now() > payload.e) {
-      return null;
-    }
-
-    return payload;
   }
 
-  private parseTokenPayload(raw: string): TokenPayload | null {
-    let obj: Record<string, unknown>;
-    try {
-      obj = JSON.parse(raw) as Record<string, unknown>;
-    } catch {
-      return null;
-    }
-    if (
-      typeof obj.s !== 'string' ||
-      typeof obj.p !== 'number' ||
-      typeof obj.e !== 'number'
-    ) {
-      return null;
-    }
-    return { s: obj.s, p: obj.p, e: obj.e };
-  }
-
-  private async isRevoked(token: string): Promise<boolean> {
-    const hash = this.hashToken(token);
-    const found = await this.revokedRepo.findOneBy({ tokenHash: hash });
+  private async isRevoked(key: string): Promise<boolean> {
+    const found = await this.revokedRepo.findOneBy({ tokenHash: key });
     return found !== null;
   }
 
-  private hashToken(token: string): string {
-    return createHmac('sha256', this.signingKey())
-      .update('revoke:' + token)
-      .digest('hex');
-  }
-
-  private signingKey(): string {
-    return this.config.internalApiToken ?? 'dev-key';
+  private hash(token: string): string {
+    return createHash('sha256').update(token).digest('hex');
   }
 }

@@ -671,24 +671,27 @@ export class MicrosandboxAdapterService implements MicrosandboxAdapter {
     workingDir?: string | null,
     ssh?: CreateRuntimeInput['ssh'],
   ): string {
-    const steps: string[] = [];
-
-    if (ssh?.enabled) {
-      steps.push(
-        'SSHD_PORT=22 SSHD_HOST_KEY=/etc/ssh/host_key SSHD_AUTHORIZED_KEYS=/root/.ssh/authorized_keys /usr/local/sbin/inject-sshd >/dev/null 2>&1 &',
-      );
-      steps.push('sleep 0.5');
-    }
+    const lines = ['set -eu'];
 
     if (workingDir?.trim()) {
-      steps.push(`cd ${this.shellEscape(workingDir.trim())}`);
+      lines.push(`cd ${this.shellEscape(workingDir.trim())}`);
     }
+
+    if (ssh?.enabled) {
+      lines.push(
+        'SSHD_PORT=22 SSHD_HOST_KEY=/etc/ssh/host_key SSHD_AUTHORIZED_KEYS=/root/.ssh/authorized_keys /usr/local/sbin/inject-sshd >/tmp/inject-sshd.log 2>&1 &',
+      );
+      lines.push('ssh_pid=$!');
+      lines.push('sleep 0.5');
+    }
+
     if (command && command.length > 0) {
-      steps.push(
+      lines.push(
         `${this.toShellCommand(command)} >/tmp/microsandbox-app.log 2>&1 &`,
       );
+      lines.push('sleep 0.5');
     }
-    return steps.join(' && ');
+    return lines.join('\n');
   }
 
   private toShellCommand(command: string[]): string {

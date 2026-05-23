@@ -58,6 +58,6 @@ export class SshService {
       this.logger.warn(`Gateway public key not found at ${path}`);
       return '';
     }
-    return readFileSync(path, 'utf-8').trim();
+    return readFileSync(path, 'utf-8').toString().trim();
   }
 }

@@ -181,12 +181,14 @@ func bridgeChannel(newChannel gossh.NewChannel, sandboxConn *gossh.Client) {
 	go func() {
 		defer wg.Done()
 		io.Copy(sandboxChannel, clientChannel)
-		sandboxChannel.CloseWrite()
+		_ = sandboxChannel.CloseWrite()
 	}()
 	go func() {
 		defer wg.Done()
 		io.Copy(clientChannel, sandboxChannel)
-		clientChannel.CloseWrite()
+		_ = clientChannel.CloseWrite()
+		_ = clientChannel.Close()
+		_ = sandboxChannel.Close()
 	}()
 
 	wg.Wait()

@@ -17,7 +17,7 @@ import {
   ApiQuery,
   ApiTags,
 } from '@nestjs/swagger';
-import { IsString } from 'class-validator';
+import { IsInt, IsOptional, IsString, Min } from 'class-validator';
 import { RuntimeRegistryService } from '../runtime-registry/runtime-registry.service.js';
 import { InternalAuthGuard } from '../shared/internal-auth.guard.js';
 import { SshSessionService } from './session.service.js';
@@ -26,6 +26,16 @@ class CreateSessionBody {
   @ApiProperty({ description: 'Sandbox ID to create SSH session for' })
   @IsString()
   sandboxId!: string;
+
+  @ApiProperty({
+    description: 'Optional SSH session expiry in minutes',
+    required: false,
+    minimum: 1,
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  expiryMinutes?: number;
 }
 
 @ApiTags('SSH Access')
@@ -61,6 +71,7 @@ export class SshController {
     const session = this.sessions.createSession(
       body.sandboxId,
       sshBinding.hostPort,
+      body.expiryMinutes,
     );
     const { hostPort, ...rest } = session;
     void hostPort;

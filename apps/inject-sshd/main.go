@@ -17,6 +17,7 @@ import (
 	"github.com/gliderlabs/ssh"
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ed25519"
+	gossh "golang.org/x/crypto/ssh"
 )
 
 func main() {
@@ -24,6 +25,7 @@ func main() {
 	hostKeyPath := envOrDefault("SSHD_HOST_KEY", "/etc/ssh/host_key")
 
 	ensureHostKey(hostKeyPath)
+	hostSigner := loadHostKey(hostKeyPath)
 
 	server := &ssh.Server{
 		Addr: ":" + port,
@@ -36,6 +38,7 @@ func main() {
 			"sftp": sftpHandler,
 		},
 	}
+	server.AddHostKey(hostSigner)
 
 	log.Printf("inject-sshd listening on :%s", port)
 	log.Fatal(server.ListenAndServe())
@@ -51,7 +54,7 @@ func authHandler(ctx ssh.Context, key ssh.PublicKey) bool {
 }
 
 func sessionHandler(s ssh.Session) {
-	shell := envOrDefault("SHELL", "/bin/sh")
+	shell := resolveShell()
 
 	if s.RawCommand() != "" {
 		cmd := exec.Command(shell, "-c", s.RawCommand())
@@ -77,6 +80,10 @@ func sessionHandler(s ssh.Session) {
 	cmd.Env = append(os.Environ(),
 		"TERM="+term,
 		"SHELL="+shell,
+		"USER=root",
+		"LOGNAME=root",
+		"HOME="+homeDir(),
+		"PS1=root@microsandbox# ",
 	)
 	cmd.Dir = homeDir()
 
@@ -182,11 +189,52 @@ func ensureHostKey(path string) {
 	}
 }
 
+func loadHostKey(path string) gossh.Signer {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		log.Fatalf("failed to read host key: %v", err)
+	}
+
+	signer, err := gossh.ParsePrivateKey(data)
+	if err != nil {
+		log.Fatalf("failed to parse host key: %v", err)
+	}
+
+	return signer
+}
+
 func envOrDefault(key, def string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
 	}
 	return def
+}
+
+func resolveShell() string {
+	if candidate := strings.TrimSpace(os.Getenv("SHELL")); candidate != "" {
+		if isExecutable(candidate) {
+			return candidate
+		}
+	}
+
+	for _, candidate := range []string{"/usr/bin/bash", "/bin/bash", "/bin/sh"} {
+		if isExecutable(candidate) {
+			return candidate
+		}
+	}
+
+	return "/bin/sh"
+}
+
+func isExecutable(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	if info.IsDir() {
+		return false
+	}
+	return info.Mode()&0o111 != 0
 }
 
 func homeDir() string {

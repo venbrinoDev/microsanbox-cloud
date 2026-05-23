@@ -537,8 +537,17 @@ export class RuntimeControlService {
 
     const updatedPrimaryPort = this.firstPortBinding(spec.ports);
     const primaryHostPort = updatedPrimaryPort.hostPort;
-    const healthy = await this.waitForHealthy(primaryHostPort);
-    if (healthy) {
+    const appHealthy = await this.waitForHealthy(primaryHostPort);
+    const sshBinding = spec.ssh?.enabled
+      ? spec.ports.find(
+          (binding) => binding.name === 'ssh' || binding.containerPort === 22,
+        )
+      : undefined;
+    const sshHealthy = sshBinding
+      ? await this.waitForHealthy(sshBinding.hostPort)
+      : true;
+    const healthy = appHealthy && sshHealthy;
+    if (appHealthy) {
       this.logger.log(
         `Sandbox healthy: sandboxId=${runtime.sandboxId}, hostPort=${primaryHostPort}`,
       );
@@ -546,6 +555,17 @@ export class RuntimeControlService {
       this.logger.warn(
         `Sandbox unhealthy: sandboxId=${runtime.sandboxId}, hostPort=${primaryHostPort}`,
       );
+    }
+    if (sshBinding) {
+      if (sshHealthy) {
+        this.logger.log(
+          `Sandbox SSH healthy: sandboxId=${runtime.sandboxId}, sshHostPort=${sshBinding.hostPort}`,
+        );
+      } else {
+        this.logger.warn(
+          `Sandbox SSH unhealthy: sandboxId=${runtime.sandboxId}, sshHostPort=${sshBinding.hostPort}`,
+        );
+      }
     }
     runtime = await this.registry.updateRuntime(runtime, {
       name,
@@ -555,7 +575,11 @@ export class RuntimeControlService {
       primaryPortProtocol: updatedPrimaryPort.protocol,
       public: spec.public,
       status: healthy ? 'running' : 'error',
-      statusReason: healthy ? 'provisioned' : 'runtime_unhealthy',
+      statusReason: healthy
+        ? 'provisioned'
+        : !appHealthy
+          ? 'runtime_unhealthy'
+          : 'ssh_unhealthy',
       image: spec.image,
       command: spec.command,
       environment: spec.env,
@@ -587,7 +611,7 @@ export class RuntimeControlService {
     const volumes = await this.resolveVolumes(input.volumes ?? []);
 
     let ssh: CreateRuntimeInput['ssh'] | undefined;
-    if (input.ssh?.enabled) {
+    if (input.ssh?.enabled !== false) {
       if (!ports.some((p) => p.containerPort === 22)) {
         ports.push({
           containerPort: 22,

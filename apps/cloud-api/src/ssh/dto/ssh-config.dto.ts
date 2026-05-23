@@ -1,8 +1,12 @@
-import { ApiProperty } from '@nestjs/swagger';
-import { IsBoolean } from 'class-validator';
+import { ApiPropertyOptional } from '@nestjs/swagger';
+import { IsBoolean, IsOptional } from 'class-validator';
 
 export class SshConfigDto {
-  @ApiProperty({ description: 'Enable SSH access to the sandbox' })
+  @ApiPropertyOptional({
+    description: 'Enable SSH access (default: true)',
+    default: true,
+  })
+  @IsOptional()
   @IsBoolean()
-  enabled!: boolean;
+  enabled?: boolean;
 }
