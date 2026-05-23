@@ -31,7 +31,7 @@ func main() {
 	apiKey := os.Getenv("API_KEY")
 	sshUser := envOrDefault("SSH_USER", "root")
 	gatewayKeyPath := envOrDefault("SSH_GATEWAY_KEY", "data/ssh/gateway-key")
-	hostKeyPath := envOrDefault("SSH_HOST_KEY", "/etc/ssh-gateway/host_key")
+	hostKeyPath := envOrDefault("SSH_HOST_KEY", "data/ssh/gateway_host_key")
 
 	ensureHostKey(hostKeyPath)
 

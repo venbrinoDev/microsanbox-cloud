@@ -13,6 +13,7 @@ import {
   ApiBearerAuth,
   ApiOperation,
   ApiParam,
+  ApiProperty,
   ApiQuery,
   ApiTags,
 } from '@nestjs/swagger';
@@ -22,6 +23,7 @@ import { InternalAuthGuard } from '../shared/internal-auth.guard.js';
 import { SshSessionService } from './session.service.js';
 
 class CreateSessionBody {
+  @ApiProperty({ description: 'Sandbox ID to create SSH session for' })
   @IsString()
   sandboxId!: string;
 }

@@ -47,9 +47,6 @@ export interface CreateRuntimeInput {
   files: RuntimeFileDto[];
   ssh?: {
     enabled: boolean;
-    publicKeys: string[];
-    user: string;
-    containerPort: number;
   };
 }
 

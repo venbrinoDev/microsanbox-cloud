@@ -97,19 +97,6 @@ export class SandboxController {
     return this.runtimeControl.get(sandboxIdOrName);
   }
 
-  @Get('sandboxes/:sandboxIdOrName/ssh-connection')
-  @UseGuards(InternalAuthGuard)
-  @ApiOperation({
-    summary: 'Get SSH connection info',
-    description: 'Get SSH connection details for a sandbox with SSH enabled',
-  })
-  @ApiParam({ name: 'sandboxIdOrName', description: 'Sandbox ID or name' })
-  getSshConnection(
-    @Param('sandboxIdOrName') sandboxIdOrName: string,
-  ): Promise<Record<string, unknown>> {
-    return this.runtimeControl.getSshConnection(sandboxIdOrName);
-  }
-
   @Post('sandboxes/:sandboxIdOrName/start')
   @UseGuards(InternalAuthGuard)
   @ApiOperation({

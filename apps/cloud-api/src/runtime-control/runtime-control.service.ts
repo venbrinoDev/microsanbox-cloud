@@ -311,27 +311,6 @@ export class RuntimeControlService {
     return { sandboxId: record.sandboxId, port };
   }
 
-  async getSshConnection(sandboxIdOrName: string): Promise<RuntimeSummary> {
-    const runtime = await this.requireRuntime(sandboxIdOrName);
-    const sshBinding = (runtime.portBindings ?? []).find(
-      (p) => p.name === 'ssh' || p.containerPort === 22,
-    );
-    if (!sshBinding) {
-      throw new NotFoundException(
-        `SSH is not enabled for sandbox ${runtime.sandboxId}`,
-      );
-    }
-    const host = new URL(this.config.proxyBaseUrl).hostname;
-    return {
-      sandboxId: runtime.sandboxId,
-      sandboxName: runtime.sandboxName,
-      host,
-      port: sshBinding.hostPort,
-      user: 'root',
-      sshCommand: `ssh -p ${sshBinding.hostPort} root@${host}`,
-    };
-  }
-
   async exec(
     sandboxIdOrName: string,
     command: string,
@@ -609,21 +588,15 @@ export class RuntimeControlService {
 
     let ssh: CreateRuntimeInput['ssh'] | undefined;
     if (input.ssh?.enabled) {
-      const sshPort = input.ssh.containerPort ?? 22;
-      if (!ports.some((p) => p.containerPort === sshPort)) {
+      if (!ports.some((p) => p.containerPort === 22)) {
         ports.push({
-          containerPort: sshPort,
+          containerPort: 22,
           hostPort: 0,
           protocol: 'tcp',
           name: 'ssh',
         });
       }
-      ssh = {
-        enabled: true,
-        publicKeys: input.ssh.publicKeys,
-        user: input.ssh.user ?? 'root',
-        containerPort: sshPort,
-      };
+      ssh = { enabled: true };
     }
 
     ports = ports.map((port) => ({ ...port, hostPort: 0 }));

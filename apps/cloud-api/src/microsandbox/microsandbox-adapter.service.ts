@@ -277,7 +277,7 @@ export class MicrosandboxAdapterService implements MicrosandboxAdapter {
     const sandbox = await configuredBuilder.createDetached();
     try {
       if (input.ssh?.enabled) {
-        await this.injectSshBinary(sandbox, input.ssh);
+        await this.injectSshBinary(sandbox);
       }
       await this.launchManagedCommand(
         sandbox,
@@ -615,10 +615,7 @@ export class MicrosandboxAdapterService implements MicrosandboxAdapter {
     }
   }
 
-  private async injectSshBinary(
-    sandbox: Sandbox,
-    ssh: NonNullable<CreateRuntimeInput['ssh']>,
-  ): Promise<void> {
+  private async injectSshBinary(sandbox: Sandbox): Promise<void> {
     this.logger.log('Injecting SSH binary into sandbox');
 
     const binaryContent = this.sshService.readBinary();
@@ -628,26 +625,17 @@ export class MicrosandboxAdapterService implements MicrosandboxAdapter {
     }
 
     const fs = sandbox.fs();
-    const userHome = ssh.user === 'root' ? '/root' : `/home/${ssh.user}`;
 
     await fs.write('/usr/local/sbin/inject-sshd', binaryContent);
     await sandbox.exec('chmod', ['+x', '/usr/local/sbin/inject-sshd']);
 
-    const allKeys = [...ssh.publicKeys];
     const gatewayKey = this.sshService.readGatewayPublicKey();
-    if (gatewayKey) {
-      allKeys.push(gatewayKey);
-    }
+    const authKeysContent = gatewayKey
+      ? this.sshService.buildAuthorizedKeysContent([gatewayKey])
+      : '';
 
-    const authKeysContent = this.sshService.buildAuthorizedKeysContent(allKeys);
-
-    await fs.mkdir(`${userHome}/.ssh`).catch(() => undefined);
-    await fs.write(`${userHome}/.ssh/authorized_keys`, authKeysContent);
-
-    if (ssh.user !== 'root') {
-      await fs.mkdir('/root/.ssh').catch(() => undefined);
-      await fs.write('/root/.ssh/authorized_keys', authKeysContent);
-    }
+    await fs.mkdir('/root/.ssh').catch(() => undefined);
+    await fs.write('/root/.ssh/authorized_keys', authKeysContent);
 
     try {
       await sandbox.exec('ssh-keygen', [
@@ -686,13 +674,8 @@ export class MicrosandboxAdapterService implements MicrosandboxAdapter {
     const steps: string[] = [];
 
     if (ssh?.enabled) {
-      const sshPort = ssh.containerPort || 22;
-      const authKeysPath =
-        ssh.user === 'root'
-          ? '/root/.ssh/authorized_keys'
-          : `/home/${ssh.user}/.ssh/authorized_keys`;
       steps.push(
-        `SSHD_PORT=${sshPort} SSHD_HOST_KEY=/etc/ssh/host_key SSHD_AUTHORIZED_KEYS=${authKeysPath} /usr/local/sbin/inject-sshd >/dev/null 2>&1 &`,
+        'SSHD_PORT=22 SSHD_HOST_KEY=/etc/ssh/host_key SSHD_AUTHORIZED_KEYS=/root/.ssh/authorized_keys /usr/local/sbin/inject-sshd >/dev/null 2>&1 &',
       );
       steps.push('sleep 0.5');
     }

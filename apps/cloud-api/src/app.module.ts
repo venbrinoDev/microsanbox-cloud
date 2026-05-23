@@ -39,7 +39,7 @@ import { SshModule } from './ssh/ssh.module.js';
             SignedPreviewTokenEntity,
             RevokedSessionEntity,
           ],
-          synchronize: true,
+          synchronize: process.env.NODE_ENV !== 'production',
         };
       },
     }),
@@ -54,6 +54,7 @@ import { SshModule } from './ssh/ssh.module.js';
     SshModule,
   ],
   controllers: [HealthController, SandboxController],
+  exports: [RuntimeRegistryService],
   providers: [
     AppConfigService,
     RuntimeRegistryService,

@@ -18,7 +18,10 @@
     "test": "npm run test -w apps/cloud-api",
     "lint": "npm run lint -w apps/cloud-api",
     "format": "prettier --write \"apps/cloud-api/src/**/*.ts\" \"apps/cloud-api/test/**/*.ts\"",
-    "package:release": "bash ./scripts/package-release.sh"
+    "package:release": "bash ./scripts/package-release.sh",
+    "migration:generate": "typeorm-ts-node-esm migration:generate -d apps/cloud-api/src/database/data-source.ts",
+    "migration:run": "typeorm-ts-node-esm migration:run -d apps/cloud-api/src/database/data-source.ts",
+    "migration:revert": "typeorm-ts-node-esm migration:revert -d apps/cloud-api/src/database/data-source.ts"
   },
   "license": "Apache-2.0"
 }
