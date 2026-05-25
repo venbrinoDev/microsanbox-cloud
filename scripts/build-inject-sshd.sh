@@ -1,8 +1,9 @@
 #!/bin/bash
 set -euo pipefail
 
-SSHD_SRC="$(cd "$(dirname "$0")/../apps/inject-sshd" && pwd)"
-OUT_DIR="$(cd "$(dirname "$0")/../data/ssh" && pwd)"
+ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+SSHD_SRC="${ROOT_DIR}/apps/inject-sshd"
+OUT_DIR="${ROOT_DIR}/data/ssh"
 
 mkdir -p "$OUT_DIR"
 

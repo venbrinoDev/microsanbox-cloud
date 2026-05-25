@@ -1,8 +1,9 @@
 #!/bin/bash
 set -euo pipefail
 
-GATEWAY_SRC="$(cd "$(dirname "$0")/../apps/ssh-gateway" && pwd)"
-OUT_DIR="$(cd "$(dirname "$0")/../data/ssh" && pwd)"
+ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+GATEWAY_SRC="${ROOT_DIR}/apps/ssh-gateway"
+OUT_DIR="${ROOT_DIR}/data/ssh"
 
 mkdir -p "$OUT_DIR"
 
