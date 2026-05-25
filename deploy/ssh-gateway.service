@@ -10,7 +10,6 @@ ExecStart=/opt/microsandbox-cloud/current/data/ssh/ssh-gateway
 EnvironmentFile=/etc/microsandbox-cloud.env
 Restart=always
 RestartSec=5
-User=microsandbox
 
 [Install]
 WantedBy=multi-user.target

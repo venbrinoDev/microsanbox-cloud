@@ -13,7 +13,10 @@ const dbPath =
   process.env.MICROSANDBOX_CLOUD_SQLITE_PATH?.trim() ||
   process.env.SQLITE_PATH ||
   'data/microsandbox-cloud.db';
-const migrationsGlob = join(currentDir, 'migrations', '*.{js,ts}');
+const migrationsGlobs = [
+  join(currentDir, 'migrations', '*.js'),
+  join(currentDir, 'migrations', '*.ts'),
+];
 
 export default new DataSource({
   type: 'sqlite',
@@ -26,5 +29,5 @@ export default new DataSource({
     SignedPreviewTokenEntity,
     RevokedSessionEntity,
   ],
-  migrations: [migrationsGlob],
+  migrations: migrationsGlobs,
 });
