@@ -28,8 +28,8 @@ func main() {
 	hostSigner := loadHostKey(hostKeyPath)
 
 	server := &ssh.Server{
-		Addr: ":" + port,
-		Handler: sessionHandler,
+		Addr:             ":" + port,
+		Handler:          sessionHandler,
 		PublicKeyHandler: authHandler,
 		PasswordHandler: func(ctx ssh.Context, password string) bool {
 			return false

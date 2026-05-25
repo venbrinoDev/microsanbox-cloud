@@ -199,7 +199,7 @@ func validateToken(apiURL, apiKey, token string) (*validateResponse, error) {
 	q := u.Query()
 	q.Set("token", token)
 	u.RawQuery = q.Encode()
-
+	
 	req, err := http.NewRequest("GET", u.String(), nil)
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)

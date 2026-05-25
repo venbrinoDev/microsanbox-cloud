@@ -16,6 +16,7 @@ export type SshSessionResult = {
 export type SshValidateResult = {
   sandboxId: string;
   hostPort: number;
+  expiresAt: string;
 };
 
 interface SessionEntry {
@@ -83,7 +84,11 @@ export class SshSessionService {
       return null;
     }
 
-    return { sandboxId: entry.sandboxId, hostPort: entry.hostPort };
+    return {
+      sandboxId: entry.sandboxId,
+      hostPort: entry.hostPort,
+      expiresAt: new Date(entry.expiresAt).toISOString(),
+    };
   }
 
   async revokeSession(token: string): Promise<boolean> {

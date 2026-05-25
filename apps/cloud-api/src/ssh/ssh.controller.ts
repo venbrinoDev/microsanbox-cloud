@@ -109,6 +109,10 @@ export class SshController {
     if (!result) {
       throw new BadRequestException('Invalid or expired SSH session token');
     }
-    return { sandboxId: result.sandboxId, hostPort: result.hostPort };
+    return {
+      sandboxId: result.sandboxId,
+      hostPort: result.hostPort,
+      expiresAt: result.expiresAt,
+    };
   }
 }
