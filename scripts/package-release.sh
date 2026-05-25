@@ -23,6 +23,9 @@ mkdir -p "${TARGET_DIR}/data"
 cp -R \
   "${ROOT_DIR}/data/ssh" \
   "${TARGET_DIR}/data/"
+cp -R \
+  "${ROOT_DIR}/deploy" \
+  "${TARGET_DIR}/deploy"
 cp \
   "${ROOT_DIR}/apps/cloud-api/package.json" \
   "${ROOT_DIR}/apps/cloud-api/package-lock.json" \
