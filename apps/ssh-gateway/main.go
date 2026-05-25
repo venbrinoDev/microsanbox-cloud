@@ -8,12 +8,14 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io"
+	"math"
 	"log"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"sync"
 	"time"
 
@@ -23,6 +25,7 @@ import (
 type validateResponse struct {
 	SandboxID string `json:"sandboxId"`
 	HostPort  int    `json:"hostPort"`
+	ExpiresAt string `json:"expiresAt"`
 }
 
 func main() {
@@ -32,6 +35,7 @@ func main() {
 	sshUser := envOrDefault("SSH_USER", "root")
 	gatewayKeyPath := envOrDefault("SSH_GATEWAY_KEY", "data/ssh/gateway-key")
 	hostKeyPath := envOrDefault("SSH_HOST_KEY", "data/ssh/gateway_host_key")
+	idleTimeout := readDurationSeconds("SSH_IDLE_TIMEOUT_SECONDS", 10*60)
 
 	ensureHostKey(hostKeyPath)
 
@@ -72,11 +76,17 @@ func main() {
 			log.Printf("accept failed: %v", err)
 			continue
 		}
-		go handleConnection(tcpConn, config, apiURL, apiKey, sshUser, gatewaySigner)
+		go handleConnection(tcpConn, config, apiURL, apiKey, sshUser, gatewaySigner, idleTimeout)
 	}
 }
 
-func handleConnection(tcpConn net.Conn, config *gossh.ServerConfig, apiURL, apiKey, sshUser string, gatewaySigner gossh.Signer) {
+func handleConnection(
+	tcpConn net.Conn,
+	config *gossh.ServerConfig,
+	apiURL, apiKey, sshUser string,
+	gatewaySigner gossh.Signer,
+	idleTimeout time.Duration,
+) {
 	defer tcpConn.Close()
 
 	tcpConn.SetDeadline(time.Now().Add(30 * time.Second))
@@ -95,6 +105,17 @@ func handleConnection(tcpConn net.Conn, config *gossh.ServerConfig, apiURL, apiK
 	target, err := validateToken(apiURL, apiKey, token)
 	if err != nil {
 		log.Printf("token validation failed: %v", err)
+		conn.Close()
+		return
+	}
+	expiresAt, err := time.Parse(time.RFC3339, target.ExpiresAt)
+	if err != nil {
+		log.Printf("invalid token expiry for sandbox=%s: %v", target.SandboxID, err)
+		conn.Close()
+		return
+	}
+	if !expiresAt.After(time.Now()) {
+		log.Printf("token already expired for sandbox=%s", target.SandboxID)
 		conn.Close()
 		return
 	}
@@ -119,14 +140,36 @@ func handleConnection(tcpConn net.Conn, config *gossh.ServerConfig, apiURL, apiK
 	}
 	defer sandboxConn.Close()
 
+	var closed atomic.Bool
+	closeConns := func() {
+		if closed.CompareAndSwap(false, true) {
+			_ = conn.Close()
+			_ = sandboxConn.Close()
+			_ = tcpConn.Close()
+		}
+	}
+
+	lastActivityNs := atomic.Int64{}
+	lastActivityNs.Store(time.Now().UnixNano())
+	touch := func() {
+		lastActivityNs.Store(time.Now().UnixNano())
+	}
+
+	go enforceSessionLimits(closeConns, &lastActivityNs, expiresAt, idleTimeout)
+
 	go gossh.DiscardRequests(reqs)
 
 	for newChannel := range chans {
-		go bridgeChannel(newChannel, sandboxConn)
+		go bridgeChannel(newChannel, sandboxConn, touch, closeConns)
 	}
 }
 
-func bridgeChannel(newChannel gossh.NewChannel, sandboxConn *gossh.Client) {
+func bridgeChannel(
+	newChannel gossh.NewChannel,
+	sandboxConn *gossh.Client,
+	touch func(),
+	closeConns func(),
+) {
 	clientChannel, clientReqs, err := newChannel.Accept()
 	if err != nil {
 		log.Printf("failed to accept channel: %v", err)
@@ -150,6 +193,7 @@ func bridgeChannel(newChannel gossh.NewChannel, sandboxConn *gossh.Client) {
 			if req == nil {
 				return
 			}
+			touch()
 			ok, err := sandboxChannel.SendRequest(req.Type, req.WantReply, req.Payload)
 			if req.WantReply {
 				replyPayload := []byte(nil)
@@ -167,6 +211,7 @@ func bridgeChannel(newChannel gossh.NewChannel, sandboxConn *gossh.Client) {
 			if req == nil {
 				return
 			}
+			touch()
 			ok, err := clientChannel.SendRequest(req.Type, req.WantReply, req.Payload)
 			if req.WantReply {
 				replyPayload := []byte(nil)
@@ -180,15 +225,14 @@ func bridgeChannel(newChannel gossh.NewChannel, sandboxConn *gossh.Client) {
 
 	go func() {
 		defer wg.Done()
-		io.Copy(sandboxChannel, clientChannel)
+		_, _ = io.Copy(sandboxChannel, &activityReader{Reader: clientChannel, touch: touch})
 		_ = sandboxChannel.CloseWrite()
 	}()
 	go func() {
 		defer wg.Done()
-		io.Copy(clientChannel, sandboxChannel)
+		_, _ = io.Copy(clientChannel, &activityReader{Reader: sandboxChannel, touch: touch})
 		_ = clientChannel.CloseWrite()
-		_ = clientChannel.Close()
-		_ = sandboxChannel.Close()
+		closeConns()
 	}()
 
 	wg.Wait()
@@ -228,6 +272,88 @@ func validateToken(apiURL, apiKey, token string) (*validateResponse, error) {
 	}
 
 	return &result, nil
+}
+
+type activityReader struct {
+	io.Reader
+	touch func()
+}
+
+func (r *activityReader) Read(p []byte) (int, error) {
+	n, err := r.Reader.Read(p)
+	if n > 0 && r.touch != nil {
+		r.touch()
+	}
+	return n, err
+}
+
+func enforceSessionLimits(
+	closeConns func(),
+	lastActivityNs *atomic.Int64,
+	expiresAt time.Time,
+	idleTimeout time.Duration,
+) {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		now := time.Now()
+		if !expiresAt.IsZero() && !now.Before(expiresAt) {
+			log.Printf("closing SSH session at absolute expiry %s", expiresAt.Format(time.RFC3339))
+			closeConns()
+			return
+		}
+		if idleTimeout > 0 {
+			last := time.Unix(0, lastActivityNs.Load())
+			if now.Sub(last) >= idleTimeout {
+				log.Printf("closing SSH session after idle timeout %s", idleTimeout)
+				closeConns()
+				return
+			}
+		}
+
+		sleep := 5 * time.Second
+		if !expiresAt.IsZero() {
+			untilExpiry := time.Until(expiresAt)
+			if untilExpiry <= 0 {
+				closeConns()
+				return
+			}
+			sleep = minDuration(sleep, untilExpiry)
+		}
+		if idleTimeout > 0 {
+			last := time.Unix(0, lastActivityNs.Load())
+			untilIdle := idleTimeout - now.Sub(last)
+			if untilIdle <= 0 {
+				closeConns()
+				return
+			}
+			sleep = minDuration(sleep, untilIdle)
+		}
+
+		ticker.Reset(maxDuration(500*time.Millisecond, sleep))
+		<-ticker.C
+	}
+}
+
+func readDurationSeconds(key string, fallbackSeconds int) time.Duration {
+	raw := envOrDefault(key, "")
+	if raw == "" {
+		return time.Duration(fallbackSeconds) * time.Second
+	}
+	var seconds int
+	if _, err := fmt.Sscanf(raw, "%d", &seconds); err != nil || seconds < 0 {
+		return time.Duration(fallbackSeconds) * time.Second
+	}
+	return time.Duration(seconds) * time.Second
+}
+
+func minDuration(a, b time.Duration) time.Duration {
+	return time.Duration(math.Min(float64(a), float64(b)))
+}
+
+func maxDuration(a, b time.Duration) time.Duration {
+	return time.Duration(math.Max(float64(a), float64(b)))
 }
 
 func loadOrGenerateGatewayKey(path string) gossh.Signer {
