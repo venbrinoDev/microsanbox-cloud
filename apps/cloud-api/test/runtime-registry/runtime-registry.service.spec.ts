@@ -14,7 +14,7 @@ describe('RuntimeRegistryService', () => {
     const moduleRef = await Test.createTestingModule({
       imports: [
         TypeOrmModule.forRoot({
-          type: 'sqlite',
+          type: 'better-sqlite3',
           database: ':memory:',
           entities: [
             RuntimeHostEntity,

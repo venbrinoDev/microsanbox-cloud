@@ -19,7 +19,7 @@ const migrationsGlobs = [
 ];
 
 export default new DataSource({
-  type: 'sqlite',
+  type: 'better-sqlite3',
   database: dbPath,
   entities: [
     RuntimeHostEntity,

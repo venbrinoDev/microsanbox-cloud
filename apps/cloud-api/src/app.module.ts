@@ -29,7 +29,7 @@ import { SshModule } from './ssh/ssh.module.js';
         const config = new AppConfigService();
         mkdirSync(dirname(config.sqlitePath), { recursive: true });
         return {
-          type: 'sqlite',
+          type: 'better-sqlite3',
           database: config.sqlitePath,
           entities: [
             RuntimeHostEntity,

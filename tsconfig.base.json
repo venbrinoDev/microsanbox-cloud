@@ -1,5 +1,6 @@
 {
   "compilerOptions": {
+    "types": ["jest", "node"],
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "declaration": true,
