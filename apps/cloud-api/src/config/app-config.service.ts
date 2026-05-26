@@ -3,7 +3,17 @@ import { dirname, join } from 'node:path';
 
 @Injectable()
 export class AppConfigService {
-  private readonly cwd = process.cwd();
+  private readonly cwd: string;
+
+  constructor() {
+    const raw = process.cwd();
+    // Handle running from within apps/cloud-api/ (monorepo) vs repo root
+    if (raw.endsWith('/apps/cloud-api')) {
+      this.cwd = join(dirname(dirname(raw)));
+    } else {
+      this.cwd = raw;
+    }
+  }
 
   get port(): number {
     return this.readInt('MICROSANDBOX_CLOUD_PORT', 3210);

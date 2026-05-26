@@ -1,104 +1,27 @@
 {
   "name": "microsandbox-cloud",
   "version": "0.0.1",
+  "private": true,
   "description": "Minimal Microsandbox control plane and signed proxy.",
-  "type": "module",
-  "author": "",
-  "private": false,
-  "license": "Apache-2.0",
+  "workspaces": [
+    "apps/*"
+  ],
   "scripts": {
-    "build": "nest build",
-    "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
-    "start": "nest start",
-    "start:dev": "nest start --watch",
-    "start:debug": "nest start --debug --watch",
-    "start:prod": "node dist/main.js",
+    "build": "npm run build -w apps/cloud-api",
+    "build:sshd": "bash ./scripts/build-inject-sshd.sh",
+    "build:gateway": "bash ./scripts/build-ssh-gateway.sh",
+    "build:ssh": "npm run build:sshd && npm run build:gateway",
+    "build:all": "npm run build && npm run build:ssh",
+    "start": "npm run start -w apps/cloud-api",
+    "start:dev": "npm run start:dev -w apps/cloud-api",
+    "start:prod": "npm run start:prod -w apps/cloud-api",
+    "test": "npm run test -w apps/cloud-api",
+    "lint": "npm run lint -w apps/cloud-api",
+    "format": "prettier --write \"apps/cloud-api/src/**/*.ts\" \"apps/cloud-api/test/**/*.ts\"",
     "package:release": "bash ./scripts/package-release.sh",
-    "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
-    "test": "node --experimental-vm-modules ./node_modules/jest/bin/jest.js",
-    "test:watch": "node --experimental-vm-modules ./node_modules/jest/bin/jest.js --watch",
-    "test:cov": "node --experimental-vm-modules ./node_modules/jest/bin/jest.js --coverage",
-    "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
-    "test:e2e": "node --experimental-vm-modules ./node_modules/jest/bin/jest.js --config ./test/jest-e2e.json"
+    "migration:generate": "typeorm-ts-node-esm migration:generate -d apps/cloud-api/src/database/data-source.ts",
+    "migration:run": "typeorm-ts-node-esm migration:run -d apps/cloud-api/src/database/data-source.ts",
+    "migration:revert": "typeorm-ts-node-esm migration:revert -d apps/cloud-api/src/database/data-source.ts"
   },
-  "dependencies": {
-    "@logtail/node": "^0.5.8",
-    "@logtail/winston": "^0.5.8",
-    "@nestjs/common": "^11.0.1",
-    "@nestjs/core": "^11.0.1",
-    "@nestjs/platform-express": "^11.0.1",
-    "@nestjs/swagger": "^11.4.3",
-    "@nestjs/typeorm": "^11.0.1",
-    "class-transformer": "^0.5.1",
-    "class-validator": "^0.15.1",
-    "dotenv": "^17.4.2",
-    "http-proxy": "^1.18.1",
-    "microsandbox": "^0.4.5",
-    "reflect-metadata": "^0.2.2",
-    "rxjs": "^7.8.1",
-    "sqlite3": "^5.1.7",
-    "typeorm": "^0.3.29",
-    "winston": "^3.19.0",
-    "winston-daily-rotate-file": "^5.0.0"
-  },
-  "devDependencies": {
-    "@eslint/eslintrc": "^3.2.0",
-    "@eslint/js": "^9.18.0",
-    "@nestjs/cli": "^11.0.0",
-    "@nestjs/schematics": "^11.0.0",
-    "@nestjs/testing": "^11.0.1",
-    "@swc/cli": "^0.6.0",
-    "@swc/core": "^1.10.7",
-    "@types/express": "^5.0.0",
-    "@types/http-proxy": "^1.17.17",
-    "@types/jest": "^29.5.14",
-    "@types/node": "^22.10.7",
-    "@types/supertest": "^6.0.2",
-    "eslint": "^9.18.0",
-    "eslint-config-prettier": "^10.0.1",
-    "eslint-plugin-prettier": "^5.2.2",
-    "globals": "^16.0.0",
-    "jest": "^29.7.0",
-    "prettier": "^3.4.2",
-    "source-map-support": "^0.5.21",
-    "supertest": "^7.0.0",
-    "ts-jest": "^29.2.5",
-    "ts-loader": "^9.5.2",
-    "ts-node": "^10.9.2",
-    "tsconfig-paths": "^4.2.0",
-    "typescript": "^5.7.3",
-    "typescript-eslint": "^8.20.0"
-  },
-  "jest": {
-    "moduleFileExtensions": [
-      "js",
-      "json",
-      "ts"
-    ],
-    "rootDir": ".",
-    "roots": [
-      "<rootDir>/src",
-      "<rootDir>/test"
-    ],
-    "testRegex": ".*\\.spec\\.ts$",
-    "extensionsToTreatAsEsm": [
-      ".ts"
-    ],
-    "moduleNameMapper": {
-      "^(\\.{1,2}/.*)\\.js$": "$1"
-    },
-    "transform": {
-      "^.+\\.(t|j)s$": [
-        "ts-jest",
-        {
-          "useESM": true
-        }
-      ]
-    },
-    "collectCoverageFrom": [
-      "src/**/*.(t|j)s"
-    ],
-    "coverageDirectory": "./coverage",
-    "testEnvironment": "node"
-  }
+  "license": "Apache-2.0"
 }

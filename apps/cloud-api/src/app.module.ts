@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Global, Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { WinstonLoggerService } from './logger/winston-logger.service.js';
 import { mkdirSync } from 'node:fs';
@@ -8,6 +8,7 @@ import { RuntimeEntity } from './database/runtime.entity.js';
 import { PortLeaseEntity } from './database/port-lease.entity.js';
 import { SignedPreviewTokenEntity } from './database/signed-preview-token.entity.js';
 import { VolumeEntity } from './database/volume.entity.js';
+import { RevokedSessionEntity } from './ssh/entities/revoked-session.entity.js';
 import { AppConfigService } from './config/app-config.service.js';
 import { HealthController } from './health/health.controller.js';
 import { RuntimeRegistryService } from './runtime-registry/runtime-registry.service.js';
@@ -18,7 +19,9 @@ import { RuntimeControlService } from './runtime-control/runtime-control.service
 import { RuntimeIdentityService } from './runtime-control/runtime-identity.service.js';
 import { ProxyService } from './proxy/proxy.service.js';
 import { InternalAuthGuard } from './shared/internal-auth.guard.js';
+import { SshModule } from './ssh/ssh.module.js';
 
+@Global()
 @Module({
   imports: [
     TypeOrmModule.forRootAsync({
@@ -34,8 +37,9 @@ import { InternalAuthGuard } from './shared/internal-auth.guard.js';
             PortLeaseEntity,
             VolumeEntity,
             SignedPreviewTokenEntity,
+            RevokedSessionEntity,
           ],
-          synchronize: true,
+          synchronize: process.env.NODE_ENV !== 'production',
         };
       },
     }),
@@ -45,9 +49,12 @@ import { InternalAuthGuard } from './shared/internal-auth.guard.js';
       PortLeaseEntity,
       VolumeEntity,
       SignedPreviewTokenEntity,
+      RevokedSessionEntity,
     ]),
+    SshModule,
   ],
   controllers: [HealthController, SandboxController],
+  exports: [RuntimeRegistryService],
   providers: [
     AppConfigService,
     RuntimeRegistryService,

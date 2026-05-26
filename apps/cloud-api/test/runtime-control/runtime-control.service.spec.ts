@@ -59,7 +59,10 @@ const runtimeFixture = (): RuntimeEntity => ({
   name: 'runtime-1',
   sandboxName: 'runtime-runtime-1',
   runtimeHostId: 'local',
-  portBindings: [{ containerPort: 8080, hostPort: 31000, protocol: 'tcp' }],
+  portBindings: [
+    { containerPort: 8080, hostPort: 31000, protocol: 'tcp' },
+    { containerPort: 22, hostPort: 31001, protocol: 'tcp', name: 'ssh' },
+  ],
   primaryPort: 8080,
   hostPort: 31000,
   primaryPortProtocol: 'tcp',

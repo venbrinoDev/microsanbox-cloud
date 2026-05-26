@@ -11,6 +11,7 @@ import {
   ValidateNested,
 } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { SshConfigDto } from '../../ssh/dto/ssh-config.dto.js';
 
 export class RuntimeFileDto {
   @ApiProperty({ description: 'File path inside the sandbox' })
@@ -259,6 +260,12 @@ class SandboxSpecDto {
   @IsOptional()
   @IsBoolean()
   ephemeral?: boolean;
+
+  @ApiPropertyOptional({ description: 'SSH access configuration' })
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => SshConfigDto)
+  ssh?: SshConfigDto;
 }
 
 export class CreateSandboxDto extends SandboxSpecDto {}

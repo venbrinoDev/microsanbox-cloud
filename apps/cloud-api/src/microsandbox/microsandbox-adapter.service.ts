@@ -1,5 +1,6 @@
 import { Injectable, ServiceUnavailableException } from '@nestjs/common';
 import { WinstonLoggerService } from '../logger/winston-logger.service.js';
+import { SshService } from '../ssh/ssh.service.js';
 import {
   MiB,
   Sandbox,
@@ -98,6 +99,7 @@ export class MicrosandboxAdapterService implements MicrosandboxAdapter {
   constructor(
     private readonly config: AppConfigService,
     private readonly logger: WinstonLoggerService,
+    private readonly sshService: SshService,
   ) {}
 
   async listCachedImages(): Promise<
@@ -274,7 +276,15 @@ export class MicrosandboxAdapterService implements MicrosandboxAdapter {
 
     const sandbox = await configuredBuilder.createDetached();
     try {
-      await this.launchManagedCommand(sandbox, input.command, input.workingDir);
+      if (input.ssh?.enabled) {
+        await this.injectSshBinary(sandbox);
+      }
+      await this.launchManagedCommand(
+        sandbox,
+        input.command,
+        input.workingDir,
+        input.ssh,
+      );
     } finally {
       await sandbox.detach();
     }
@@ -605,30 +615,83 @@ export class MicrosandboxAdapterService implements MicrosandboxAdapter {
     }
   }
 
+  private async injectSshBinary(sandbox: Sandbox): Promise<void> {
+    this.logger.log('Injecting SSH binary into sandbox');
+
+    const binaryContent = this.sshService.readBinary();
+    if (binaryContent.length === 0) {
+      this.logger.warn('SSH binary not found, skipping injection');
+      return;
+    }
+
+    const fs = sandbox.fs();
+
+    await fs.write('/usr/local/sbin/inject-sshd', binaryContent);
+    await sandbox.exec('chmod', ['+x', '/usr/local/sbin/inject-sshd']);
+
+    const gatewayKey = this.sshService.readGatewayPublicKey();
+    const authKeysContent = gatewayKey
+      ? this.sshService.buildAuthorizedKeysContent([gatewayKey])
+      : '';
+
+    await fs.mkdir('/root/.ssh').catch(() => undefined);
+    await fs.write('/root/.ssh/authorized_keys', authKeysContent);
+
+    try {
+      await sandbox.exec('ssh-keygen', [
+        '-t',
+        'ed25519',
+        '-f',
+        '/etc/ssh/host_key',
+        '-N',
+        '',
+      ]);
+    } catch {
+      this.logger.warn(
+        'ssh-keygen not available, inject-sshd will auto-generate host key',
+      );
+    }
+  }
+
   private async launchManagedCommand(
     sandbox: Sandbox,
     command?: string[] | null,
     workingDir?: string | null,
+    ssh?: CreateRuntimeInput['ssh'],
   ): Promise<void> {
-    if (!command || command.length === 0) {
+    if ((!command || command.length === 0) && !ssh?.enabled) {
       return;
     }
-    const launchScript = this.buildLaunchScript(command, workingDir);
+    const launchScript = this.buildLaunchScript(command, workingDir, ssh);
     await sandbox.exec('sh', ['-lc', launchScript]);
   }
 
   private buildLaunchScript(
-    command: string[],
+    command: string[] | null | undefined,
     workingDir?: string | null,
+    ssh?: CreateRuntimeInput['ssh'],
   ): string {
-    const steps: string[] = [];
+    const lines = ['set -eu'];
+
     if (workingDir?.trim()) {
-      steps.push(`cd ${this.shellEscape(workingDir.trim())}`);
+      lines.push(`cd ${this.shellEscape(workingDir.trim())}`);
     }
-    steps.push(
-      `${this.toShellCommand(command)} >/tmp/microsandbox-app.log 2>&1 &`,
-    );
-    return steps.join(' && ');
+
+    if (ssh?.enabled) {
+      lines.push(
+        'SSHD_PORT=22 SSHD_HOST_KEY=/etc/ssh/host_key SSHD_AUTHORIZED_KEYS=/root/.ssh/authorized_keys /usr/local/sbin/inject-sshd >/tmp/inject-sshd.log 2>&1 &',
+      );
+      lines.push('ssh_pid=$!');
+      lines.push('sleep 0.5');
+    }
+
+    if (command && command.length > 0) {
+      lines.push(
+        `${this.toShellCommand(command)} >/tmp/microsandbox-app.log 2>&1 &`,
+      );
+      lines.push('sleep 0.5');
+    }
+    return lines.join('\n');
   }
 
   private toShellCommand(command: string[]): string {

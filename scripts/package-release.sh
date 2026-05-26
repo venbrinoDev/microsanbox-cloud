@@ -17,11 +17,18 @@ TARGET_DIR="${STAGE_DIR}/${PKG_DIR_NAME}"
 mkdir -p "${TARGET_DIR}" "${ROOT_DIR}/${OUTDIR}"
 
 cp -R \
-  "${ROOT_DIR}/dist" \
+  "${ROOT_DIR}/apps/cloud-api/dist" \
   "${TARGET_DIR}/dist"
+mkdir -p "${TARGET_DIR}/data"
+cp -R \
+  "${ROOT_DIR}/data/ssh" \
+  "${TARGET_DIR}/data/"
+cp -R \
+  "${ROOT_DIR}/deploy" \
+  "${TARGET_DIR}/deploy"
 cp \
-  "${ROOT_DIR}/package.json" \
-  "${ROOT_DIR}/package-lock.json" \
+  "${ROOT_DIR}/apps/cloud-api/package.json" \
+  "${ROOT_DIR}/apps/cloud-api/package-lock.json" \
   "${ROOT_DIR}/README.md" \
   "${ROOT_DIR}/LICENSE" \
   "${TARGET_DIR}/"
