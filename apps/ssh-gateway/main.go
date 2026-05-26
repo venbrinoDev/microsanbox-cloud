@@ -232,7 +232,6 @@ func bridgeChannel(
 		defer wg.Done()
 		_, _ = io.Copy(clientChannel, &activityReader{Reader: sandboxChannel, touch: touch})
 		_ = clientChannel.CloseWrite()
-		closeConns()
 	}()
 
 	wg.Wait()
