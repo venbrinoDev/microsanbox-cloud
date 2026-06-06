@@ -28,7 +28,6 @@ cp -R \
   "${TARGET_DIR}/deploy"
 cp \
   "${ROOT_DIR}/apps/cloud-api/package.json" \
-  "${ROOT_DIR}/apps/cloud-api/package-lock.json" \
   "${ROOT_DIR}/README.md" \
   "${ROOT_DIR}/LICENSE" \
   "${TARGET_DIR}/"
