@@ -680,7 +680,7 @@ export class MicrosandboxAdapterService implements MicrosandboxAdapter {
 
     if (ssh?.enabled) {
       lines.push(
-        'SSHD_PORT=22 SSHD_HOST_KEY=/etc/ssh/host_key SSHD_AUTHORIZED_KEYS=/root/.ssh/authorized_keys /usr/local/sbin/inject-sshd >/tmp/inject-sshd.log 2>&1 &',
+        'SSHD_PORT=22 SSHD_HOST_KEY=/etc/ssh/host_key SSHD_AUTHORIZED_KEYS=/root/.ssh/authorized_keys /usr/local/sbin/inject-sshd >/tmp/inject-sshd.log 2>&1 </dev/null &',
       );
       lines.push('ssh_pid=$!');
       lines.push('sleep 0.5');
@@ -688,7 +688,7 @@ export class MicrosandboxAdapterService implements MicrosandboxAdapter {
 
     if (command && command.length > 0) {
       lines.push(
-        `${this.toShellCommand(command)} >/tmp/microsandbox-app.log 2>&1 &`,
+        `${this.toShellCommand(command)} >/tmp/microsandbox-app.log 2>&1 </dev/null &`,
       );
       lines.push('sleep 0.5');
     }

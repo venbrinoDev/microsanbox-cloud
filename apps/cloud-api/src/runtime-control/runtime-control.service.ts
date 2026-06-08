@@ -68,7 +68,7 @@ export class RuntimeControlService {
     private readonly logger: WinstonLoggerService,
     @Inject(MICROSANDBOX_ADAPTER)
     private readonly microsandbox: MicrosandboxAdapter,
-  ) {}
+  ) { }
 
   async create(input: CreateSandboxDto): Promise<RuntimeSummary> {
     const name = this.registry.normalizeName(input.name);
@@ -510,12 +510,22 @@ export class RuntimeControlService {
       });
     } else {
       const existingRuntime = runtime;
-      spec.ports = spec.ports.map((port, index) => ({
-        ...port,
-        hostPort:
-          existingRuntime.portBindings[index]?.hostPort ??
-          existingRuntime.hostPort,
-      }));
+      const newPortsCount = spec.ports.length - existingRuntime.portBindings.length;
+      let leased: number[] = [];
+      if (newPortsCount > 0) {
+        leased = await this.registry.leasePorts(runtime.id, newPortsCount);
+      }
+      let newPortIndex = 0;
+      spec.ports = spec.ports.map((port, index) => {
+        let hostPort = existingRuntime.portBindings[index]?.hostPort;
+        if (hostPort === undefined) {
+          hostPort = leased[newPortIndex++]!;
+        }
+        return {
+          ...port,
+          hostPort,
+        };
+      });
     }
 
     await this.microsandbox.createDetachedRuntime({
@@ -540,8 +550,8 @@ export class RuntimeControlService {
     const appHealthy = await this.waitForHealthy(primaryHostPort);
     const sshBinding = spec.ssh?.enabled
       ? spec.ports.find(
-          (binding) => binding.name === 'ssh' || binding.containerPort === 22,
-        )
+        (binding) => binding.name === 'ssh' || binding.containerPort === 22,
+      )
       : undefined;
     const sshHealthy = sshBinding
       ? await this.waitForHealthy(sshBinding.hostPort)
@@ -758,13 +768,13 @@ export class RuntimeControlService {
       ports?.length
         ? ports
         : [
-            {
-              containerPort:
-                primaryPort?.containerPort ?? this.config.defaultExposedPort,
-              protocol: primaryPort?.protocol ?? ('tcp' as const),
-              name: primaryPort?.name,
-            },
-          ]
+          {
+            containerPort:
+              primaryPort?.containerPort ?? this.config.defaultExposedPort,
+            protocol: primaryPort?.protocol ?? ('tcp' as const),
+            name: primaryPort?.name,
+          },
+        ]
     ).map((entry) => ({
       name: entry.name?.trim() || undefined,
       containerPort: entry.containerPort,
