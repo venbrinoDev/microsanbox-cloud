@@ -11,3 +11,5 @@ artifacts/
 *.sqlite
 *.sqlite-*
 !.env.example
+*.tsbuildinfo
+
