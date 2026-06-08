@@ -91,8 +91,7 @@ type SandboxBuilderLike = {
     mountPath: string,
     callback: (builderInstance: VolumeBinderLike) => unknown,
   ): SandboxBuilderLike;
-  detached(value: boolean): SandboxBuilderLike;
-  create(): Promise<MicrosandboxRuntime>;
+  createDetached(): Promise<MicrosandboxRuntime>;
 };
 
 @Injectable()
@@ -275,7 +274,7 @@ export class MicrosandboxAdapterService implements MicrosandboxAdapter {
       );
     }
 
-    const sandbox = await configuredBuilder.detached(true).create();
+    const sandbox = await configuredBuilder.createDetached();
     try {
       if (input.ssh?.enabled) {
         await this.injectSshBinary(sandbox);
