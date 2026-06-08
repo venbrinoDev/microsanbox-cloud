@@ -639,13 +639,9 @@ export class MicrosandboxAdapterService implements MicrosandboxAdapter {
     await fs.write('/root/.ssh/authorized_keys', authKeysContent);
 
     try {
-      await sandbox.exec('ssh-keygen', [
-        '-t',
-        'ed25519',
-        '-f',
-        '/etc/ssh/host_key',
-        '-N',
-        '',
+      await sandbox.exec('sh', [
+        '-c',
+        'if command -v ssh-keygen >/dev/null 2>&1; then ssh-keygen -t ed25519 -f /etc/ssh/host_key -N ""; fi',
       ]);
     } catch {
       this.logger.warn(
