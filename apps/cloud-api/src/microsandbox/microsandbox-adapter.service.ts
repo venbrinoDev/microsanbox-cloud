@@ -277,7 +277,13 @@ export class MicrosandboxAdapterService implements MicrosandboxAdapter {
     const sandbox = await configuredBuilder.createDetached();
     try {
       if (input.ssh?.enabled) {
-        await this.injectSshBinary(sandbox);
+        try {
+          await this.injectSshBinary(sandbox);
+        } catch (error) {
+          this.logger.warn(
+            `SSH setup failed; continuing runtime launch without injected SSH: ${this.errorMessage(error)}`,
+          );
+        }
       }
       await this.launchManagedCommand(
         sandbox,
@@ -627,7 +633,10 @@ export class MicrosandboxAdapterService implements MicrosandboxAdapter {
     const fs = sandbox.fs();
 
     await fs.write('/usr/local/sbin/inject-sshd', binaryContent);
-    await sandbox.exec('chmod', ['+x', '/usr/local/sbin/inject-sshd']);
+    await this.execWithTransientRetry(sandbox, 'chmod', [
+      '+x',
+      '/usr/local/sbin/inject-sshd',
+    ]);
 
     const gatewayKey = this.sshService.readGatewayPublicKey();
     const authKeysContent = gatewayKey
@@ -638,7 +647,7 @@ export class MicrosandboxAdapterService implements MicrosandboxAdapter {
     await fs.write('/root/.ssh/authorized_keys', authKeysContent);
 
     try {
-      await sandbox.exec('sh', [
+      await this.execWithTransientRetry(sandbox, 'sh', [
         '-c',
         'if command -v ssh-keygen >/dev/null 2>&1; then ssh-keygen -t ed25519 -f /etc/ssh/host_key -N ""; fi',
       ]);
@@ -659,7 +668,78 @@ export class MicrosandboxAdapterService implements MicrosandboxAdapter {
       return;
     }
     const launchScript = this.buildLaunchScript(command, workingDir, ssh);
-    await sandbox.exec('sh', ['-lc', launchScript]);
+    await this.execWithTransientRetry(sandbox, 'sh', ['-lc', launchScript]);
+  }
+
+  private async execWithTransientRetry(
+    sandbox: Sandbox,
+    command: string,
+    args: string[],
+  ): Promise<unknown> {
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      try {
+        return await this.execWithTimeout(sandbox, command, args, 5_000);
+      } catch (error) {
+        lastError = error;
+        if (!this.isRetryableExecError(error) || attempt === 3) {
+          throw error;
+        }
+        this.logger.warn(
+          `Sandbox exec failed transiently; retrying command=${command} attempt=${attempt + 1}: ${this.errorMessage(error)}`,
+        );
+        await this.delay(250 * attempt);
+      }
+    }
+    throw lastError;
+  }
+
+  private async execWithTimeout(
+    sandbox: Sandbox,
+    command: string,
+    args: string[],
+    timeoutMs: number,
+  ): Promise<unknown> {
+    let timeout: NodeJS.Timeout | undefined;
+    try {
+      return await Promise.race([
+        sandbox.exec(command, args),
+        new Promise<never>((_, reject) => {
+          timeout = setTimeout(() => {
+            reject(new Error(`sandbox exec timed out after ${timeoutMs}ms`));
+          }, timeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timeout) {
+        clearTimeout(timeout);
+      }
+    }
+  }
+
+  private isRetryableExecError(error: unknown): boolean {
+    const message = this.errorMessage(error);
+    return (
+      message.includes('exec session ended without exit event') ||
+      message.includes('sandbox exec timed out')
+    );
+  }
+
+  private errorMessage(error: unknown): string {
+    if (error instanceof Error) {
+      return error.message;
+    }
+    if (typeof error === 'string') {
+      return error;
+    }
+    if (error === null || error === undefined) {
+      return '';
+    }
+    try {
+      return JSON.stringify(error);
+    } catch {
+      return 'unknown error';
+    }
   }
 
   private buildLaunchScript(

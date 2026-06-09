@@ -68,7 +68,7 @@ export class RuntimeControlService {
     private readonly logger: WinstonLoggerService,
     @Inject(MICROSANDBOX_ADAPTER)
     private readonly microsandbox: MicrosandboxAdapter,
-  ) { }
+  ) {}
 
   async create(input: CreateSandboxDto): Promise<RuntimeSummary> {
     const name = this.registry.normalizeName(input.name);
@@ -510,7 +510,8 @@ export class RuntimeControlService {
       });
     } else {
       const existingRuntime = runtime;
-      const newPortsCount = spec.ports.length - existingRuntime.portBindings.length;
+      const newPortsCount =
+        spec.ports.length - existingRuntime.portBindings.length;
       let leased: number[] = [];
       if (newPortsCount > 0) {
         leased = await this.registry.leasePorts(runtime.id, newPortsCount);
@@ -528,30 +529,39 @@ export class RuntimeControlService {
       });
     }
 
-    await this.microsandbox.createDetachedRuntime({
-      sandboxName: runtime.sandboxName,
-      image: spec.image,
-      registryAuth: spec.registryAuth,
-      command: spec.command,
-      workingDir: spec.workingDir,
-      ports: spec.ports,
-      mounts: spec.mountInputs,
-      cpu: spec.resources.cpu,
-      memoryMiB: spec.resources.memoryMiB,
-      diskGiB: spec.resources.diskGiB,
-      env: spec.env,
-      secrets: spec.secrets,
-      files: spec.files,
-      ssh: spec.ssh,
-    });
+    try {
+      await this.microsandbox.createDetachedRuntime({
+        sandboxName: runtime.sandboxName,
+        image: spec.image,
+        registryAuth: spec.registryAuth,
+        command: spec.command,
+        workingDir: spec.workingDir,
+        ports: spec.ports,
+        mounts: spec.mountInputs,
+        cpu: spec.resources.cpu,
+        memoryMiB: spec.resources.memoryMiB,
+        diskGiB: spec.resources.diskGiB,
+        env: spec.env,
+        secrets: spec.secrets,
+        files: spec.files,
+        ssh: spec.ssh,
+      });
+    } catch (error) {
+      if (!this.isDetachedExecEndedWithoutExitEvent(error)) {
+        throw error;
+      }
+      this.logger.warn(
+        `Detached runtime setup reported a transient exec close; continuing to health check: sandboxId=${runtime.sandboxId}`,
+      );
+    }
 
     const updatedPrimaryPort = this.firstPortBinding(spec.ports);
     const primaryHostPort = updatedPrimaryPort.hostPort;
     const appHealthy = await this.waitForHealthy(primaryHostPort);
     const sshBinding = spec.ssh?.enabled
       ? spec.ports.find(
-        (binding) => binding.name === 'ssh' || binding.containerPort === 22,
-      )
+          (binding) => binding.name === 'ssh' || binding.containerPort === 22,
+        )
       : undefined;
     const sshHealthy = sshBinding
       ? await this.waitForHealthy(sshBinding.hostPort)
@@ -768,13 +778,13 @@ export class RuntimeControlService {
       ports?.length
         ? ports
         : [
-          {
-            containerPort:
-              primaryPort?.containerPort ?? this.config.defaultExposedPort,
-            protocol: primaryPort?.protocol ?? ('tcp' as const),
-            name: primaryPort?.name,
-          },
-        ]
+            {
+              containerPort:
+                primaryPort?.containerPort ?? this.config.defaultExposedPort,
+              protocol: primaryPort?.protocol ?? ('tcp' as const),
+              name: primaryPort?.name,
+            },
+          ]
     ).map((entry) => ({
       name: entry.name?.trim() || undefined,
       containerPort: entry.containerPort,
@@ -948,6 +958,28 @@ export class RuntimeControlService {
       );
     } while (Date.now() < deadline);
     return false;
+  }
+
+  private isDetachedExecEndedWithoutExitEvent(error: unknown): boolean {
+    const message = this.errorMessage(error);
+    return message.includes('exec session ended without exit event');
+  }
+
+  private errorMessage(error: unknown): string {
+    if (error instanceof Error) {
+      return error.message;
+    }
+    if (typeof error === 'string') {
+      return error;
+    }
+    if (error === null || error === undefined) {
+      return '';
+    }
+    try {
+      return JSON.stringify(error);
+    } catch {
+      return 'unknown error';
+    }
   }
 
   private volumeSummary(volume: VolumeEntity): Record<string, unknown> {
