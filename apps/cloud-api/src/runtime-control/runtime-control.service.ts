@@ -547,11 +547,11 @@ export class RuntimeControlService {
         ssh: spec.ssh,
       });
     } catch (error) {
-      if (!this.isDetachedExecEndedWithoutExitEvent(error)) {
+      if (!this.isTransientDetachedSetupError(error)) {
         throw error;
       }
       this.logger.warn(
-        `Detached runtime setup reported a transient exec close; continuing to health check: sandboxId=${runtime.sandboxId}`,
+        `Detached runtime setup reported a transient exec issue; continuing to health check: sandboxId=${runtime.sandboxId}`,
       );
     }
 
@@ -960,9 +960,12 @@ export class RuntimeControlService {
     return false;
   }
 
-  private isDetachedExecEndedWithoutExitEvent(error: unknown): boolean {
+  private isTransientDetachedSetupError(error: unknown): boolean {
     const message = this.errorMessage(error);
-    return message.includes('exec session ended without exit event');
+    return (
+      message.includes('exec session ended without exit event') ||
+      message.includes('sandbox exec timed out')
+    );
   }
 
   private errorMessage(error: unknown): string {

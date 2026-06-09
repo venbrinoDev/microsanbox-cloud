@@ -292,7 +292,7 @@ export class MicrosandboxAdapterService implements MicrosandboxAdapter {
         input.ssh,
       );
     } finally {
-      await sandbox.detach();
+      await this.detachBestEffort(sandbox);
     }
   }
 
@@ -707,6 +707,38 @@ export class MicrosandboxAdapterService implements MicrosandboxAdapter {
         new Promise<never>((_, reject) => {
           timeout = setTimeout(() => {
             reject(new Error(`sandbox exec timed out after ${timeoutMs}ms`));
+          }, timeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timeout) {
+        clearTimeout(timeout);
+      }
+    }
+  }
+
+  private async detachBestEffort(sandbox: Sandbox): Promise<void> {
+    try {
+      await this.withTimeout(sandbox.detach(), 2_000, 'sandbox detach');
+    } catch (error) {
+      this.logger.warn(
+        `Sandbox detach failed after runtime launch; continuing: ${this.errorMessage(error)}`,
+      );
+    }
+  }
+
+  private async withTimeout<T>(
+    promise: Promise<T>,
+    timeoutMs: number,
+    label: string,
+  ): Promise<T> {
+    let timeout: NodeJS.Timeout | undefined;
+    try {
+      return await Promise.race([
+        promise,
+        new Promise<never>((_, reject) => {
+          timeout = setTimeout(() => {
+            reject(new Error(`${label} timed out after ${timeoutMs}ms`));
           }, timeoutMs);
         }),
       ]);
