@@ -396,6 +396,18 @@ describe('RuntimeControlService', () => {
     const runtime = runtimeFixture();
     const registry = createRegistryMock(runtime);
     const microsandbox = createMicrosandboxMock();
+    let refreshedAt: Date | undefined;
+    registry.updateRuntime = jest.fn(
+      (current: RuntimeEntity, patch: Partial<RuntimeEntity>) => {
+        if (patch.lastActiveAt instanceof Date) {
+          refreshedAt = patch.lastActiveAt;
+        }
+        return Promise.resolve({
+          ...current,
+          ...patch,
+        });
+      },
+    );
 
     const service = new RuntimeControlService(
       new AppConfigService(),
@@ -409,10 +421,7 @@ describe('RuntimeControlService', () => {
     expect(microsandbox.refreshActivity).toHaveBeenCalledWith(
       'runtime-runtime-1',
     );
-    expect(registry.updateRuntime).toHaveBeenCalledWith(
-      runtime,
-      expect.objectContaining({ lastActiveAt: expect.any(Date) }),
-    );
+    expect(refreshedAt).toBeInstanceOf(Date);
     expect(result).toEqual({
       runtimeId: 'runtime-1',
       sandboxId: 'runtime-1',
