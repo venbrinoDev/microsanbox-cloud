@@ -333,6 +333,16 @@ export class RuntimeControlService {
     };
   }
 
+  async refreshActivity(sandboxIdOrName: string): Promise<RuntimeSummary> {
+    const runtime = await this.requireRunningRuntime(sandboxIdOrName);
+    this.logger.log(`Refresh sandbox activity: sandboxId=${runtime.sandboxId}`);
+    await this.microsandbox.refreshActivity(runtime.sandboxName);
+    const updated = await this.registry.updateRuntime(runtime, {
+      lastActiveAt: new Date(),
+    });
+    return this.registry.runtimeStatusSummary(updated);
+  }
+
   async writeFiles(
     sandboxIdOrName: string,
     files: RuntimeFileDto[],
@@ -544,6 +554,7 @@ export class RuntimeControlService {
         env: spec.env,
         secrets: spec.secrets,
         files: spec.files,
+        autoStopMinutes: spec.autoStopMinutes,
         ssh: spec.ssh,
       });
     } catch (error) {
@@ -657,10 +668,10 @@ export class RuntimeControlService {
       mountInputs: volumes.mountInputs,
       resources,
       public: input.public === true,
-      // Native Microsandbox idle timeout is intentionally disabled for launch.
-      // Jovita still sends busy/activity signals, but lifecycle remains manual
-      // until platform-side stop/delete policy is wired end-to-end.
-      autoStopMinutes: null,
+      autoStopMinutes:
+        input.autoStopMinutes && input.autoStopMinutes > 0
+          ? input.autoStopMinutes
+          : null,
       ephemeral: input.ephemeral === true,
       ssh,
     };

@@ -203,6 +203,20 @@ export class SandboxController {
     return this.runtimeControl.exec(sandboxId, body.command, body.args ?? []);
   }
 
+  @Post('internal/runtimes/:sandboxId/refresh-activity')
+  @UseGuards(InternalAuthGuard)
+  @ApiOperation({
+    summary: 'Refresh sandbox activity',
+    description:
+      'Execute a no-op command inside a running sandbox to refresh its native idle timeout',
+  })
+  @ApiParam({ name: 'sandboxId', description: 'Sandbox ID' })
+  refreshActivity(
+    @Param('sandboxId') sandboxId: string,
+  ): Promise<Record<string, unknown>> {
+    return this.runtimeControl.refreshActivity(sandboxId);
+  }
+
   @Post('runtime-access/:sandboxId/files')
   @UseGuards(InternalAuthGuard)
   @ApiOperation({
