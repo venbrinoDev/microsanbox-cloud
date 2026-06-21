@@ -87,6 +87,7 @@ type SandboxBuilderLike = {
   portUdp(hostPort: number, containerPort: number): SandboxBuilderLike;
   secret(callback: (entry: SecretBuilder) => SecretBuilder): SandboxBuilderLike;
   workdir(value: string): SandboxBuilderLike;
+  idleTimeout(value: number): SandboxBuilderLike;
   volume(
     mountPath: string,
     callback: (builderInstance: VolumeBinderLike) => unknown,
@@ -263,6 +264,9 @@ export class MicrosandboxAdapterService implements MicrosandboxAdapter {
     }
     if (input.workingDir) {
       configuredBuilder.workdir(input.workingDir);
+    }
+    if (input.autoStopMinutes && input.autoStopMinutes > 0) {
+      configuredBuilder.idleTimeout(input.autoStopMinutes * 60);
     }
     for (const mount of input.mounts) {
       configuredBuilder.volume(
@@ -462,6 +466,19 @@ export class MicrosandboxAdapterService implements MicrosandboxAdapter {
         stderr: output.stderr(),
         exitCode: output.code ?? 0,
       };
+    } finally {
+      await sandbox.detach();
+    }
+  }
+
+  async refreshActivity(name: string): Promise<void> {
+    const handle = await Sandbox.get(name);
+    if (handle.status !== 'running') {
+      throw new Error(`Sandbox is not running: ${name}`);
+    }
+    const sandbox = await handle.connect();
+    try {
+      await sandbox.shell(':');
     } finally {
       await sandbox.detach();
     }

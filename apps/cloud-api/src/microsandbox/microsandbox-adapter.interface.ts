@@ -45,6 +45,7 @@ export interface CreateRuntimeInput {
   env: Record<string, string>;
   secrets: RuntimeSecretInput[];
   files: RuntimeFileDto[];
+  autoStopMinutes?: number | null;
   ssh?: {
     enabled: boolean;
   };
@@ -86,6 +87,7 @@ export interface MicrosandboxAdapter {
     command: string,
     args?: string[],
   ): Promise<{ stdout: string; stderr: string; exitCode: number }>;
+  refreshActivity(name: string): Promise<void>;
   writeFiles(name: string, files: RuntimeFileDto[]): Promise<void>;
   readFiles(
     name: string,

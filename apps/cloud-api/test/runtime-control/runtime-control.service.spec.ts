@@ -1,4 +1,4 @@
-import { NotFoundException } from '@nestjs/common';
+import { ConflictException, NotFoundException } from '@nestjs/common';
 import { jest } from '@jest/globals';
 import { AppConfigService } from '../../src/config/app-config.service.js';
 import type { RuntimeEntity } from '../../src/database/runtime.entity.js';
@@ -45,6 +45,7 @@ type MicrosandboxMock = Pick<
   | 'getStatus'
   | 'isHealthy'
   | 'readFiles'
+  | 'refreshActivity'
   | 'remove'
   | 'removeVolume'
   | 'ensureVolume'
@@ -249,6 +250,12 @@ function createMicrosandboxMock(): MicrosandboxMock {
       void paths;
       return Promise.resolve([]);
     });
+  const refreshActivityMock: jest.MockedFunction<
+    MicrosandboxAdapter['refreshActivity']
+  > = jest.fn((name: string) => {
+    void name;
+    return Promise.resolve();
+  });
   const removeMock: jest.MockedFunction<MicrosandboxAdapter['remove']> =
     jest.fn((name: string) => {
       void name;
@@ -293,6 +300,7 @@ function createMicrosandboxMock(): MicrosandboxMock {
     getStatus: getStatusMock,
     isHealthy: isHealthyMock,
     readFiles: readFilesMock,
+    refreshActivity: refreshActivityMock,
     remove: removeMock,
     removeVolume: removeVolumeMock,
     ensureVolume: ensureVolumeMock,
@@ -382,6 +390,92 @@ describe('RuntimeControlService', () => {
       sandboxId: 'runtime-1',
       status: 'running',
     });
+  });
+
+  it('refreshes activity for a running sandbox', async () => {
+    const runtime = runtimeFixture();
+    const registry = createRegistryMock(runtime);
+    const microsandbox = createMicrosandboxMock();
+    let refreshedAt: Date | undefined;
+    registry.updateRuntime = jest.fn(
+      (current: RuntimeEntity, patch: Partial<RuntimeEntity>) => {
+        if (patch.lastActiveAt instanceof Date) {
+          refreshedAt = patch.lastActiveAt;
+        }
+        return Promise.resolve({
+          ...current,
+          ...patch,
+        });
+      },
+    );
+
+    const service = new RuntimeControlService(
+      new AppConfigService(),
+      registry as RuntimeRegistryService,
+      createLoggerMock(),
+      microsandbox,
+    );
+
+    const result = await service.refreshActivity('runtime-1');
+
+    expect(microsandbox.refreshActivity).toHaveBeenCalledWith(
+      'runtime-runtime-1',
+    );
+    expect(refreshedAt).toBeInstanceOf(Date);
+    expect(result).toEqual({
+      runtimeId: 'runtime-1',
+      sandboxId: 'runtime-1',
+      status: 'running',
+    });
+  });
+
+  it('does not refresh activity for a stopped sandbox', async () => {
+    const runtime = runtimeFixture();
+    runtime.status = 'stopped';
+    const registry = createRegistryMock(runtime);
+    const microsandbox = createMicrosandboxMock();
+    microsandbox.getStatus = jest.fn(() => Promise.resolve('stopped'));
+
+    const service = new RuntimeControlService(
+      new AppConfigService(),
+      registry as RuntimeRegistryService,
+      createLoggerMock(),
+      microsandbox,
+    );
+
+    await expect(service.refreshActivity('runtime-1')).rejects.toBeInstanceOf(
+      ConflictException,
+    );
+    expect(microsandbox.refreshActivity).not.toHaveBeenCalled();
+  });
+
+  it('passes auto-stop minutes to native idle timeout during provisioning', async () => {
+    const registry = createRegistryMock(null);
+    const microsandbox = createMicrosandboxMock();
+
+    const service = new RuntimeControlService(
+      new AppConfigService(),
+      registry as RuntimeRegistryService,
+      createLoggerMock(),
+      microsandbox,
+    );
+
+    await service.ensure({
+      sandboxId: 'runtime-1',
+      name: 'runtime-1',
+      image: 'image:1',
+      command: ['nginx', '-g', 'daemon off;'],
+      env: {},
+      workingDir: '/workspace',
+      primaryPort: { containerPort: 8080, protocol: 'tcp' },
+      autoStopMinutes: 5,
+    });
+
+    expect(microsandbox.createDetachedRuntime).toHaveBeenCalledWith(
+      expect.objectContaining({
+        autoStopMinutes: 5,
+      }),
+    );
   });
 
   it('updates an existing sandbox using existing values for omitted fields', async () => {
