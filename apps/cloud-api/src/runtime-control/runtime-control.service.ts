@@ -393,6 +393,8 @@ export class RuntimeControlService {
   }
 
   private async provision(input: EnsureRuntimeDto): Promise<RuntimeSummary> {
+    const provisionStartedAt = Date.now();
+    let stageStartedAt = provisionStartedAt;
     const name = this.registry.normalizeName(input.name);
     if (name) {
       const existingByName =
@@ -403,7 +405,17 @@ export class RuntimeControlService {
     }
 
     let runtime = await this.registry.findRuntimeBySandboxId(input.sandboxId!);
+    stageStartedAt = this.logProvisionStage(
+      input.sandboxId!,
+      'runtime_lookup',
+      stageStartedAt,
+    );
     const spec = await this.buildSpec(input);
+    stageStartedAt = this.logProvisionStage(
+      input.sandboxId!,
+      'spec_build',
+      stageStartedAt,
+    );
     const initialPrimaryPort = this.firstPortBinding(spec.ports);
     const shouldReplace =
       runtime !== null &&
@@ -419,14 +431,24 @@ export class RuntimeControlService {
         currentRuntime.portBindings?.find(
           (binding) => binding.containerPort === currentRuntime.primaryPort,
         )?.hostPort ?? currentRuntime.hostPort;
-      if (
+      const currentHealthy =
         currentStatus === 'running' &&
-        (await this.microsandbox.isHealthy(primaryHostPort))
-      ) {
+        (await this.microsandbox.isHealthy(primaryHostPort));
+      stageStartedAt = this.logProvisionStage(
+        input.sandboxId!,
+        'existing_health_check',
+        stageStartedAt,
+      );
+      if (currentHealthy) {
         if (spec.files.length > 0) {
           await this.microsandbox.writeFiles(
             currentRuntime.sandboxName,
             spec.files,
+          );
+          stageStartedAt = this.logProvisionStage(
+            input.sandboxId!,
+            'existing_file_sync',
+            stageStartedAt,
           );
         }
         runtime = await this.registry.updateRuntime(currentRuntime, {
@@ -441,6 +463,14 @@ export class RuntimeControlService {
               ? currentRuntime.lastActiveAt
               : new Date(),
         });
+        this.logProvisionStage(
+          input.sandboxId!,
+          'existing_persist',
+          stageStartedAt,
+        );
+        this.logger.log(
+          `Runtime provision timing sandboxId=${input.sandboxId} path=existing totalMs=${Date.now() - provisionStartedAt}`,
+        );
         return this.registry.runtimeStatusSummary(runtime);
       }
     }
@@ -557,6 +587,11 @@ export class RuntimeControlService {
         autoStopMinutes: spec.autoStopMinutes,
         ssh: spec.ssh,
       });
+      stageStartedAt = this.logProvisionStage(
+        input.sandboxId!,
+        'detached_runtime_start',
+        stageStartedAt,
+      );
     } catch (error) {
       if (!this.isTransientDetachedSetupError(error)) {
         throw error;
@@ -569,6 +604,11 @@ export class RuntimeControlService {
     const updatedPrimaryPort = this.firstPortBinding(spec.ports);
     const primaryHostPort = updatedPrimaryPort.hostPort;
     const appHealthy = await this.waitForHealthy(primaryHostPort);
+    stageStartedAt = this.logProvisionStage(
+      input.sandboxId!,
+      'app_health_ready',
+      stageStartedAt,
+    );
     const sshBinding = spec.ssh?.enabled
       ? spec.ports.find(
           (binding) => binding.name === 'ssh' || binding.containerPort === 22,
@@ -577,6 +617,11 @@ export class RuntimeControlService {
     const sshHealthy = sshBinding
       ? await this.waitForHealthy(sshBinding.hostPort)
       : true;
+    stageStartedAt = this.logProvisionStage(
+      input.sandboxId!,
+      'ssh_health_ready',
+      stageStartedAt,
+    );
     const healthy = appHealthy && sshHealthy;
     if (appHealthy) {
       this.logger.log(
@@ -625,6 +670,10 @@ export class RuntimeControlService {
       lastActiveAt:
         input.refreshActivity === false ? runtime.lastActiveAt : new Date(),
     });
+    this.logProvisionStage(input.sandboxId!, 'runtime_persist', stageStartedAt);
+    this.logger.log(
+      `Runtime provision timing sandboxId=${input.sandboxId} path=start totalMs=${Date.now() - provisionStartedAt}`,
+    );
     return this.registry.runtimeStatusSummary(runtime);
   }
 
@@ -969,6 +1018,18 @@ export class RuntimeControlService {
       );
     } while (Date.now() < deadline);
     return false;
+  }
+
+  private logProvisionStage(
+    sandboxId: string,
+    stage: string,
+    startedAt: number,
+  ): number {
+    const now = Date.now();
+    this.logger.log(
+      `Runtime provision stage sandboxId=${sandboxId} stage=${stage} durationMs=${now - startedAt}`,
+    );
+    return now;
   }
 
   private isTransientDetachedSetupError(error: unknown): boolean {

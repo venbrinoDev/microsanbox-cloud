@@ -9,6 +9,7 @@ import {
   VolumeBuilder,
   isInstalled,
   type Sandbox as MicrosandboxRuntime,
+  type SandboxBuilder,
   type SandboxHandle,
 } from 'microsandbox';
 import { spawn } from 'node:child_process';
@@ -67,32 +68,6 @@ type BoundVolumeHandleLike = {
 type VolumeBinderLike = {
   bind(host: string): BoundVolumeHandleLike;
   named(name: string): BoundVolumeHandleLike;
-};
-
-type SandboxBuilderLike = {
-  replace(): SandboxBuilderLike;
-  image(value: string): SandboxBuilderLike;
-  cpus(value: number): SandboxBuilderLike;
-  memory(value: unknown): SandboxBuilderLike;
-  patch(
-    callback: (patch: BootstrapPatchBuilder) => BootstrapPatchBuilder,
-  ): SandboxBuilderLike;
-  envs(values: Record<string, string>): SandboxBuilderLike;
-  registry(
-    callback: (
-      registry: RegistryConfigBuilderLike,
-    ) => RegistryConfigBuilderLike,
-  ): SandboxBuilderLike;
-  port(hostPort: number, containerPort: number): SandboxBuilderLike;
-  portUdp(hostPort: number, containerPort: number): SandboxBuilderLike;
-  secret(callback: (entry: SecretBuilder) => SecretBuilder): SandboxBuilderLike;
-  workdir(value: string): SandboxBuilderLike;
-  idleTimeout(value: number): SandboxBuilderLike;
-  volume(
-    mountPath: string,
-    callback: (builderInstance: VolumeBinderLike) => unknown,
-  ): SandboxBuilderLike;
-  createDetached(): Promise<MicrosandboxRuntime>;
 };
 
 @Injectable()
@@ -218,11 +193,10 @@ export class MicrosandboxAdapterService implements MicrosandboxAdapter {
     this.logger.log(
       `Creating detached runtime: sandboxName=${input.sandboxName}, image=${input.image}`,
     );
-    const builder = Sandbox.builder(
-      input.sandboxName,
-    ) as unknown as SandboxBuilderLike;
+    const builder: SandboxBuilder = Sandbox.builder(input.sandboxName);
     const configuredBuilder = builder
       .replace()
+      .detached(true)
       .image(input.image)
       .cpus(input.cpu)
       .memory(MiB(input.memoryMiB))
@@ -278,7 +252,7 @@ export class MicrosandboxAdapterService implements MicrosandboxAdapter {
       );
     }
 
-    const sandbox = await configuredBuilder.createDetached();
+    const sandbox = await configuredBuilder.create();
     try {
       if (input.ssh?.enabled) {
         try {
