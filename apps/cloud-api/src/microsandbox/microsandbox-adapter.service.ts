@@ -8,7 +8,6 @@ import {
   Volume,
   VolumeBuilder,
   isInstalled,
-  type Sandbox as MicrosandboxRuntime,
   type SandboxBuilder,
   type SandboxHandle,
 } from 'microsandbox';
