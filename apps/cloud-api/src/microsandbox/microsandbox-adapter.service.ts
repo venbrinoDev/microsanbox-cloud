@@ -7,7 +7,9 @@ import {
   Image,
   Volume,
   VolumeBuilder,
-  isInstalled,
+  SecretBuilder as SdkSecretBuilder,
+  isRuntimeInstalled,
+  setDefaultBackend,
   type SandboxBuilder,
   type SandboxHandle,
 } from 'microsandbox';
@@ -38,19 +40,9 @@ type BootstrapPatchBuilder = {
   ): BootstrapPatchBuilder;
 };
 
-type SecretBuilder = {
-  env(value: string): SecretBuilder;
-  value(value: string): SecretBuilder;
-  placeholder(value: string): SecretBuilder;
-  allowHost(value: string): SecretBuilder;
-  allowHostPattern(value: string): SecretBuilder;
-  allowAnyHostDangerous(value: boolean): SecretBuilder;
-  requireTlsIdentity(value: boolean): SecretBuilder;
-  injectHeaders(value: boolean): SecretBuilder;
-  injectBasicAuth(value: boolean): SecretBuilder;
-  injectQuery(value: boolean): SecretBuilder;
-  injectBody(value: boolean): SecretBuilder;
-};
+// Use the SDK's own builder type: `SandboxBuilder.secret()` takes an untyped
+// callback, so a local hand-written type would hide SDK renames until runtime.
+type SecretBuilder = InstanceType<typeof SdkSecretBuilder>;
 
 type RegistryConfigBuilderLike = {
   auth(auth: {
@@ -75,7 +67,12 @@ export class MicrosandboxAdapterService implements MicrosandboxAdapter {
     private readonly config: AppConfigService,
     private readonly logger: WinstonLoggerService,
     private readonly sshService: SshService,
-  ) {}
+  ) {
+    // This service drives the host's own runtime. Without this, a stray
+    // MSB_API_KEY / MSB_PROFILE in the environment would switch the SDK to the
+    // hosted cloud backend.
+    setDefaultBackend('local');
+  }
 
   async listCachedImages(): Promise<
     Array<{
@@ -281,11 +278,18 @@ export class MicrosandboxAdapterService implements MicrosandboxAdapter {
     if (secret.placeholder) {
       current = current.placeholder(secret.placeholder);
     }
-    for (const host of secret.allowedHosts) {
-      current = current.allowHost(host);
-    }
-    for (const pattern of secret.allowedHostPatterns) {
-      current = current.allowHostPattern(pattern);
+    // Since SDK 0.7, `allow()` takes exact hosts and `*.example.com` patterns.
+    for (const host of [
+      ...secret.allowedHosts,
+      ...secret.allowedHostPatterns,
+    ]) {
+      if (host.trim() === '*') {
+        // The SDK panics on a bare `*`; any-host must be explicit.
+        throw new Error(
+          `Secret ${secret.env}: use allowAnyHostDangerous instead of a "*" host`,
+        );
+      }
+      current = current.allow(host);
     }
     if (secret.allowAnyHostDangerous === true) {
       current = current.allowAnyHostDangerous(true);
@@ -293,23 +297,26 @@ export class MicrosandboxAdapterService implements MicrosandboxAdapter {
     if (typeof secret.requireTlsIdentity === 'boolean') {
       current = current.requireTlsIdentity(secret.requireTlsIdentity);
     }
-    if (typeof secret.injectHeaders === 'boolean') {
-      current = current.injectHeaders(secret.injectHeaders);
-    }
-    if (typeof secret.injectBasicAuth === 'boolean') {
-      current = current.injectBasicAuth(secret.injectBasicAuth);
+    if (secret.injectBasicAuth === true && secret.injectHeaders !== true) {
+      // SDK 0.7 folds Basic-auth substitution into header substitution on the
+      // Authorization header, so scope headers to that field only.
+      current = current
+        .substituteInHeaders(true)
+        .substituteInHeaderFields(['authorization']);
+    } else if (typeof secret.injectHeaders === 'boolean') {
+      current = current.substituteInHeaders(secret.injectHeaders);
     }
     if (typeof secret.injectQuery === 'boolean') {
-      current = current.injectQuery(secret.injectQuery);
+      current = current.substituteInQuery(secret.injectQuery);
     }
     if (typeof secret.injectBody === 'boolean') {
-      current = current.injectBody(secret.injectBody);
+      current = current.substituteInBody(secret.injectBody);
     }
     return current;
   }
 
   private ensureMicrosandboxRuntimeInstalled(): void {
-    if (!isInstalled()) {
+    if (!isRuntimeInstalled()) {
       throw new ServiceUnavailableException(
         'Microsandbox runtime is not installed on this host. Install Microsandbox before pulling or provisioning images.',
       );
@@ -622,6 +629,9 @@ export class MicrosandboxAdapterService implements MicrosandboxAdapter {
 
     const fs = sandbox.fs();
 
+    // fs.write does not create parent directories, and minimal images
+    // (e.g. alpine) have no /usr/local/sbin.
+    await fs.mkdir('/usr/local/sbin').catch(() => undefined);
     await fs.write('/usr/local/sbin/inject-sshd', binaryContent);
     await this.execWithTransientRetry(sandbox, 'chmod', [
       '+x',
